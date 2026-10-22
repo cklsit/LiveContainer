@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import subprocess
@@ -28,6 +29,7 @@ DEPLOY_PORT = 49321
 SERVICE_TYPE = "_noname-deploy._tcp"
 DEFAULT_BUNDLE_ID = "com.libnoname.noname"
 HOST_BUNDLE_ID = "com.kdt.livecontainer"
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class DeploymentError(RuntimeError):
@@ -135,6 +137,19 @@ def terminate_process(process: subprocess.Popen[str]) -> None:
             process.kill()
 
 
+def read_process_lines_until(process: subprocess.Popen[str], deadline: float):
+    if process.stdout is None:
+        return
+    while time.monotonic() < deadline:
+        readable, _, _ = select.select([process.stdout], [], [], max(0.0, deadline - time.monotonic()))
+        if not readable:
+            return
+        line = process.stdout.readline()
+        if not line:
+            return
+        yield line
+
+
 def discover_bonjour_service(timeout: float) -> tuple[str, int]:
     browse = subprocess.Popen(
         ["dns-sd", "-B", SERVICE_TYPE, "local."],
@@ -146,12 +161,7 @@ def discover_bonjour_service(timeout: float) -> tuple[str, int]:
     service_name: str | None = None
     deadline = time.monotonic() + timeout
     try:
-        assert browse.stdout is not None
-        while time.monotonic() < deadline:
-            line = browse.stdout.readline()
-            if not line:
-                time.sleep(0.2)
-                continue
+        for line in read_process_lines_until(browse, deadline):
             if " Add " in line:
                 parts = line.strip().split()
                 if len(parts) >= 7:
@@ -172,12 +182,7 @@ def discover_bonjour_service(timeout: float) -> tuple[str, int]:
     )
     deadline = time.monotonic() + timeout
     try:
-        assert resolve.stdout is not None
-        while time.monotonic() < deadline:
-            line = resolve.stdout.readline()
-            if not line:
-                time.sleep(0.2)
-                continue
+        for line in read_process_lines_until(resolve, deadline):
             match = re.search(r"can be reached at ([^:\s]+):(\d+)", line)
             if not match:
                 continue
@@ -241,7 +246,7 @@ def wait_for_server(host: str, port: int, timeout: float) -> None:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(f"http://{host}:{port}/v1/hello", timeout=2) as response:
+            with LOCAL_OPENER.open(f"http://{host}:{port}/v1/hello", timeout=2) as response:
                 if response.status == 200:
                     return
         except Exception as error:
@@ -280,7 +285,7 @@ def signed_request(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with LOCAL_OPENER.open(request, timeout=30) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as error:
         try:
@@ -348,7 +353,7 @@ def deploy(
         print(f"Deployment job: {job_id}")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            with urllib.request.urlopen(f"http://{host}:{port}/v1/jobs/{job_id}", timeout=10) as reply:
+            with LOCAL_OPENER.open(f"http://{host}:{port}/v1/jobs/{job_id}", timeout=10) as reply:
                 job = json.loads(reply.read())
             status_text = job.get("status")
             message = job.get("message") or ""
