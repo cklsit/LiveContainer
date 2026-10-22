@@ -1,13 +1,13 @@
 # Noname LAN deployment
 
 This branch adds an opt-in deployment endpoint to the LiveContainer-specific
-SideStore build. A self-hosted macOS runner can uninstall and reinstall one
-allowlisted app on a paired iPad over the local network.
+SideStore build. A self-hosted Linux or macOS runner can uninstall and
+reinstall one allowlisted app on a paired iPad over the local network.
 
 ## Security model
 
 - The endpoint is disabled until SideStore receives a per-run secret.
-- The runner passes that secret through `sidestore://noname-deploy/configure`.
+- The runner passes that secret through an authenticated launch mechanism.
 - Requests use HMAC-SHA256, a five-minute timestamp window, and a one-time nonce.
 - Only `com.libnoname.noname` is accepted.
 - The iPad downloads the IPA over HTTP or HTTPS and verifies SHA-256 before
@@ -21,7 +21,9 @@ allowlisted app on a paired iPad over the local network.
 - SideStore signed in with an active signing certificate.
 - A valid pairing file and LocalDevVPN connection.
 - iPad unlocked and connected to the same network as the runner.
-- A macOS runner with Xcode `devicectl`, `dns-sd`, and Python 3.
+- Python 3 and `pymobiledevice3`.
+- A Linux runner with RemotePairing and RemoteXPC access, or a macOS runner
+  with Xcode `devicectl`.
 - Exactly one paired iPad visible, or an explicit `--device-id`.
 
 The initial installation of LiveContainer+SideStore still requires the normal
@@ -33,15 +35,31 @@ Create a repository runner registration token on the local machine:
 gh api -X POST repos/cklsit/noname/actions/runners/registration-token --jq .token
 ```
 
-Then run the provided installer on the LAN Mac:
+Then run the provided installer on the LAN Linux host:
 
 ```bash
+export RUNNER_ROOT=/volume1/docker/github-runner-noname
 RUNNER_TOKEN="<short-lived-token>" \
-  bash scripts/noname-deploy/install-runner-macos.sh
+  bash scripts/noname-deploy/install-runner-linux.sh
 ```
 
 The registration token is short-lived. Do not commit it or place it in workflow
 YAML.
+
+For iOS 27 and newer, create the one-time RemotePairing trust relationship with
+the same user that owns the runner:
+
+```bash
+"$RUNNER_ROOT/.pmd3/bin/pymobiledevice3" remote pair-host \
+  --name Synology-Noname --timeout 300
+```
+
+On the iPad, enable Developer Mode, open **Settings > Developer > Paired Macs**,
+select the advertised host, and enter the displayed six-digit code once. The
+runner reuses that pairing record for later unattended builds.
+
+For older iOS versions, use the corresponding `pymobiledevice3 remote pair`
+flow and retain its pairing record outside the repository.
 
 ## Build modified SideStore
 
@@ -68,7 +86,7 @@ python3 scripts/noname-deploy/deploy.py \
 Optional inputs:
 
 ```text
---device-id <devicectl-id>  Select a specific paired iPad
+--device-id <udid>          Select a specific paired iPad
 --host <lan-host>           Skip Bonjour discovery
 --timeout <seconds>         Deployment timeout; default 900
 --keep-ipa                  Keep the source IPA after the run
@@ -91,8 +109,9 @@ runner, not on untrusted pull request code.
 
 ## Current limitations
 
-- `devicectl` requires an existing trust relationship and an unlocked iPad.
+- Device launch requires an existing trust relationship and an unlocked iPad.
 - iOS may suspend background execution; keep LocalDevVPN/SideStore healthy and
-  allow the runner to relaunch SideStore through `devicectl`.
+  allow the runner to relaunch SideStore through `pymobiledevice3` or
+  `devicectl`.
 - Apple Account, certificate, pairing, or LocalDevVPN failure stops deployment.
 - Uninstalling the app deletes its local containers and data.

@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
@@ -43,6 +44,48 @@ class CanonicalRequestTests(unittest.TestCase):
                 deploy.sha256_file(path),
                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             )
+
+    def test_pymobiledevice3_discovery_keeps_only_ipads(self):
+        payload = [
+            {
+                "UniqueDeviceID": "ipad-udid",
+                "DeviceName": "Test iPad",
+                "DeviceClass": "iPad",
+                "ProductType": "iPad14,8",
+                "ip": "192.0.2.10",
+            },
+            {
+                "UniqueDeviceID": "iphone-udid",
+                "DeviceName": "Test iPhone",
+                "DeviceClass": "iPhone",
+                "ProductType": "iPhone17,1",
+                "ip": "192.0.2.11",
+            },
+        ]
+        self.assertEqual(
+            deploy.parse_pymobiledevice3_devices(payload),
+            [
+                {
+                    "identifier": "ipad-udid",
+                    "name": "Test iPad",
+                    "host": "192.0.2.10",
+                }
+            ],
+        )
+
+    def test_command_errors_redact_secrets(self):
+        secret = "sensitive-launch-token"
+        completed = deploy.subprocess.CompletedProcess(
+            args=["command"],
+            returncode=1,
+            stdout=f"prefix {secret} suffix",
+            stderr=f"failure {secret}",
+        )
+        with mock.patch.object(deploy.subprocess, "run", return_value=completed):
+            with self.assertRaises(deploy.DeploymentError) as raised:
+                deploy.run(["command", secret], redact=(secret,))
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertIn("<redacted>", str(raised.exception))
 
 
 if __name__ == "__main__":

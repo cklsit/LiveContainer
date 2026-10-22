@@ -1,5 +1,5 @@
 name: Deploy Noname IPA to iPad
-description: Use the authenticated built-in SideStore endpoint from a LAN self-hosted macOS runner.
+description: Use the authenticated built-in SideStore endpoint from a trusted LAN runner.
 
 inputs:
   ipa-path:
@@ -10,7 +10,7 @@ inputs:
     required: false
     default: com.libnoname.noname
   device-id:
-    description: Optional devicectl identifier. Discovery requires exactly one paired iPad when omitted.
+    description: Optional device UDID or devicectl identifier. Discovery requires exactly one paired iPad when omitted.
     required: false
     default: ""
   host:
@@ -36,4 +36,5 @@ runs:
         if [[ "${{ inputs.keep-ipa }}" == "true" ]]; then
           args+=(--keep-ipa)
         fi
-        python3 "${{ github.action_path }}/../../../scripts/noname-deploy/deploy.py" "${args[@]}"
+        python_bin="${NONAME_DEPLOY_PYTHON:-python3}"
+        "$python_bin" "${{ github.action_path }}/../../../scripts/noname-deploy/deploy.py" "${args[@]}"

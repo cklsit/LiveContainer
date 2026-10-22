@@ -27,6 +27,7 @@ from typing import Any
 
 DEPLOY_PORT = 49321
 SERVICE_TYPE = "_noname-deploy._tcp"
+SERVICE_DNS_TYPE = f"{SERVICE_TYPE}.local."
 DEFAULT_BUNDLE_ID = "com.libnoname.noname"
 HOST_BUNDLE_ID = "com.kdt.livecontainer"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -60,71 +61,166 @@ def find_dicts(value: Any, predicate):
             yield from find_dicts(child, predicate)
 
 
-def run(command: list[str], *, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+def run(
+    command: list[str],
+    *,
+    timeout: int = 60,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+    redact: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, env=env)
     if check and result.returncode != 0:
+        display_command = " ".join(command)
+        stdout = result.stdout
+        stderr = result.stderr
+        for value in redact:
+            display_command = display_command.replace(value, "<redacted>")
+            stdout = stdout.replace(value, "<redacted>")
+            stderr = stderr.replace(value, "<redacted>")
         raise DeploymentError(
-            f"Command failed ({result.returncode}): {' '.join(command)}\n"
-            f"{result.stdout}\n{result.stderr}"
+            f"Command failed ({result.returncode}): {display_command}\n"
+            f"{stdout}\n{stderr}"
         )
     return result
+
+
+def pymobiledevice3_executable() -> str:
+    configured = os.environ.get("PYMOBILEDEVICE3")
+    executable = configured or shutil.which("pymobiledevice3")
+    if not executable:
+        raise DeploymentError(
+            "pymobiledevice3 was not found. Install it in the runner environment "
+            "or set PYMOBILEDEVICE3 to its executable."
+        )
+    return executable
+
+
+def parse_pymobiledevice3_devices(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        raise DeploymentError("pymobiledevice3 discovery returned an unexpected payload")
+    candidates = []
+    for device in payload:
+        if not isinstance(device, dict):
+            continue
+        product_type = str(device.get("ProductType") or "")
+        device_class = str(device.get("DeviceClass") or "")
+        identifier = str(device.get("UniqueDeviceID") or "")
+        if not identifier:
+            continue
+        if device_class != "iPad" and not product_type.startswith("iPad"):
+            continue
+        candidates.append(
+            {
+                "identifier": identifier,
+                "name": str(device.get("DeviceName") or product_type or identifier),
+                "host": device.get("ip"),
+            }
+        )
+    return candidates
+
+
+def select_pymobiledevice3_device() -> dict[str, Any]:
+    executable = pymobiledevice3_executable()
+    result = run(
+        [executable, "--no-color", "bonjour", "mobdev2", "--timeout", "5"],
+        timeout=30,
+    )
+    try:
+        candidates = parse_pymobiledevice3_devices(json.loads(result.stdout))
+    except json.JSONDecodeError as error:
+        raise DeploymentError(f"Could not parse pymobiledevice3 discovery output: {result.stdout}") from error
+
+    if len(candidates) != 1:
+        names = ", ".join(item["name"] or item["identifier"] for item in candidates) or "none"
+        raise DeploymentError(
+            f"Expected exactly one paired iPad from pymobiledevice3 discovery, found {len(candidates)}: {names}. "
+            "Configure ipad_device_id with the target UDID."
+        )
+    return candidates[0]
 
 
 def select_device(explicit_device: str | None) -> dict[str, Any]:
     if explicit_device:
         return {"identifier": explicit_device, "name": "configured device"}
 
-    with tempfile.TemporaryDirectory(prefix="noname-devicectl-") as directory:
-        output = Path(directory) / "devices.json"
-        run(["xcrun", "devicectl", "list", "devices", "--json-output", str(output), "--quiet"], timeout=30)
-        payload = json.loads(output.read_text(encoding="utf-8"))
+    if sys.platform == "darwin":
+        with tempfile.TemporaryDirectory(prefix="noname-devicectl-") as directory:
+            output = Path(directory) / "devices.json"
+            run(["xcrun", "devicectl", "list", "devices", "--json-output", str(output), "--quiet"], timeout=30)
+            payload = json.loads(output.read_text(encoding="utf-8"))
 
-    candidates = []
-    for device in find_dicts(payload, lambda item: "identifier" in item and "deviceProperties" in item):
-        properties = device.get("deviceProperties") or {}
-        connection = device.get("connectionProperties") or {}
-        name = str(properties.get("name") or "")
-        if connection.get("pairingState") not in (None, "paired"):
-            continue
-        if connection.get("tunnelState") not in (None, "connected"):
-            continue
-        if "ipad" not in name.lower():
-            continue
-        candidates.append(
-            {
-                "identifier": str(device["identifier"]),
-                "name": name,
-                "host": connection.get("dnsName"),
-            }
-        )
+        candidates = []
+        for device in find_dicts(payload, lambda item: "identifier" in item and "deviceProperties" in item):
+            properties = device.get("deviceProperties") or {}
+            connection = device.get("connectionProperties") or {}
+            name = str(properties.get("name") or "")
+            if connection.get("pairingState") not in (None, "paired"):
+                continue
+            if connection.get("tunnelState") not in (None, "connected"):
+                continue
+            if "ipad" not in name.lower():
+                continue
+            candidates.append(
+                {
+                    "identifier": str(device["identifier"]),
+                    "name": name,
+                    "host": connection.get("dnsName"),
+                }
+            )
 
-    if len(candidates) != 1:
-        names = ", ".join(item["name"] or item["identifier"] for item in candidates) or "none"
-        raise DeploymentError(
-            f"Expected exactly one paired iPad, found {len(candidates)}: {names}. "
-            "Use --device-id to select one explicitly."
-        )
-    return candidates[0]
+        if len(candidates) != 1:
+            names = ", ".join(item["name"] or item["identifier"] for item in candidates) or "none"
+            raise DeploymentError(
+                f"Expected exactly one paired iPad, found {len(candidates)}: {names}. "
+                "Use --device-id to select one explicitly."
+            )
+        return candidates[0]
+
+    return select_pymobiledevice3_device()
 
 
 def launch_configured_side_store(device_id: str, token: str) -> None:
-    query = urllib.parse.urlencode({"token": token})
-    payload_url = f"sidestore://noname-deploy/configure?{query}"
+    if sys.platform == "darwin":
+        query = urllib.parse.urlencode({"token": token})
+        payload_url = f"sidestore://noname-deploy/configure?{query}"
+        run(
+            [
+                "xcrun",
+                "devicectl",
+                "device",
+                "process",
+                "launch",
+                "--device",
+                device_id,
+                "--terminate-existing",
+                "--payload-url",
+                payload_url,
+                HOST_BUNDLE_ID,
+            ],
+            timeout=60,
+            redact=(token,),
+        )
+        return
+
+    executable = pymobiledevice3_executable()
+    environment = os.environ.copy()
+    environment["PYMOBILEDEVICE3_UDID"] = device_id
+    environment.setdefault("PYMOBILEDEVICE3_RECONNECT", "1")
     run(
         [
-            "xcrun",
-            "devicectl",
-            "device",
-            "process",
-            "launch",
-            "--device",
-            device_id,
-            "--terminate-existing",
-            "--payload-url",
-            payload_url,
+            executable,
+            "--no-color",
+            "developer",
+            "core-device",
+            "launch-application",
+            "--userspace",
             HOST_BUNDLE_ID,
+            f"noname-deploy-token={token}",
         ],
-        timeout=60,
+        timeout=120,
+        env=environment,
+        redact=(token,),
     )
 
 
@@ -150,7 +246,7 @@ def read_process_lines_until(process: subprocess.Popen[str], deadline: float):
         yield line
 
 
-def discover_bonjour_service(timeout: float) -> tuple[str, int]:
+def discover_bonjour_with_dns_sd(timeout: float) -> tuple[str, int]:
     browse = subprocess.Popen(
         ["dns-sd", "-B", SERVICE_TYPE, "local."],
         text=True,
@@ -200,6 +296,61 @@ def discover_bonjour_service(timeout: float) -> tuple[str, int]:
         terminate_process(resolve)
 
     raise DeploymentError(f"Could not resolve SideStore deployment host '{service_name}'")
+
+
+def discover_bonjour_with_zeroconf(timeout: float) -> tuple[str, int]:
+    try:
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError as error:
+        raise DeploymentError(
+            "DNS-SD discovery requires dns-sd on macOS or the zeroconf Python package on Linux"
+        ) from error
+
+    names: set[str] = set()
+
+    class Listener(ServiceListener):
+        def add_service(self, zeroconf: Any, service_type: str, name: str) -> None:
+            names.add(name)
+
+        def update_service(self, zeroconf: Any, service_type: str, name: str) -> None:
+            names.add(name)
+
+        def remove_service(self, zeroconf: Any, service_type: str, name: str) -> None:
+            names.discard(name)
+
+    zeroconf = Zeroconf()
+    browser = ServiceBrowser(zeroconf, SERVICE_DNS_TYPE, Listener())
+    deadline = time.monotonic() + timeout
+    endpoints: set[tuple[str, int]] = set()
+    try:
+        while time.monotonic() < deadline:
+            for name in tuple(names):
+                info = zeroconf.get_service_info(SERVICE_DNS_TYPE, name, timeout=500)
+                if not info:
+                    continue
+                for address in info.parsed_addresses():
+                    if ":" in address:
+                        continue
+                    endpoints.add((address, int(info.port)))
+            if endpoints:
+                break
+            time.sleep(0.25)
+    finally:
+        browser.cancel()
+        zeroconf.close()
+
+    if len(endpoints) != 1:
+        rendered = ", ".join(f"{host}:{port}" for host, port in sorted(endpoints)) or "none"
+        raise DeploymentError(
+            f"Expected exactly one SideStore deployment endpoint over Bonjour, found {len(endpoints)}: {rendered}"
+        )
+    return endpoints.pop()
+
+
+def discover_bonjour_service(timeout: float) -> tuple[str, int]:
+    if sys.platform == "darwin" and shutil.which("dns-sd"):
+        return discover_bonjour_with_dns_sd(timeout)
+    return discover_bonjour_with_zeroconf(timeout)
 
 
 def local_address_for(remote_host: str) -> str:
@@ -321,15 +472,15 @@ def deploy(
 
     digest = sha256_file(ipa_path)
     served_path = f"/ipa/{secrets.token_urlsafe(24)}.ipa"
+    runner_ip = local_address_for(host)
     IPARequestHandler.ipa_path = ipa_path
     IPARequestHandler.expected_path = served_path
-    server = ThreadingHTTPServer(("0.0.0.0", 0), IPARequestHandler)
+    server = ThreadingHTTPServer((runner_ip, 0), IPARequestHandler)
     server.daemon_threads = True
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
     try:
-        runner_ip = local_address_for(host)
         ipa_url = f"http://{runner_ip}:{server.server_address[1]}{served_path}"
         payload = {
             "bundleID": bundle_id,
@@ -352,9 +503,19 @@ def deploy(
 
         print(f"Deployment job: {job_id}")
         deadline = time.monotonic() + timeout
+        job_path = f"/v1/jobs/{job_id}"
         while time.monotonic() < deadline:
-            with LOCAL_OPENER.open(f"http://{host}:{port}/v1/jobs/{job_id}", timeout=10) as reply:
-                job = json.loads(reply.read())
+            status, job = signed_request(
+                host,
+                port,
+                token,
+                {},
+                method="GET",
+                path=job_path,
+                body=b"",
+            )
+            if status != 200 or not job.get("ok"):
+                raise DeploymentError(f"Deployment status request was rejected: {job}")
             status_text = job.get("status")
             message = job.get("message") or ""
             print(f"[{status_text}] {message}", flush=True)
@@ -382,8 +543,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if sys.platform != "darwin":
-        raise DeploymentError("This deployment runner requires macOS and Xcode devicectl")
     try:
         deploy(
             ipa_path=args.ipa.resolve(),
