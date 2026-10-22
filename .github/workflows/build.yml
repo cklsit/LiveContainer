@@ -9,6 +9,10 @@ on:
         description: Create a nightly release
         type: boolean
         required: false
+      sidestore_ipa_url:
+        description: Optional URL of a modified SideStore.ipa to embed
+        type: string
+        required: false
 
 jobs:
   build:
@@ -17,6 +21,7 @@ jobs:
     env:
       scheme: LiveContainer
       archive_path: archive
+      SIDESTORE_IPA_URL: ${{ inputs.sidestore_ipa_url || vars.NONAME_SIDESTORE_IPA_URL }}
     outputs:
       scheme: ${{ steps.scheme.outputs.scheme }}
       archive_path: ${{ env.archive_path }}
@@ -67,6 +72,8 @@ jobs:
           name: ${{ env.archive_path }}.xcarchive.tar
           path: ${{ env.archive_path }}.xcarchive.tar
       - name: Create IPA
+        env:
+          SIDESTORE_IPA_URL: ${{ env.SIDESTORE_IPA_URL }}
         run: |
           sh .github/build_github.sh
 
