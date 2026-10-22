@@ -27,6 +27,22 @@ allowlisted app on a paired iPad over the local network.
 The initial installation of LiveContainer+SideStore still requires the normal
 SideStore/AltStore flow. This automation covers later Noname deployments.
 
+Create a repository runner registration token on the local machine:
+
+```bash
+gh api -X POST repos/cklsit/noname/actions/runners/registration-token --jq .token
+```
+
+Then run the provided installer on the LAN Mac:
+
+```bash
+RUNNER_TOKEN="<short-lived-token>" \
+  bash scripts/noname-deploy/install-runner-macos.sh
+```
+
+The registration token is short-lived. Do not commit it or place it in workflow
+YAML.
+
 ## Build modified SideStore
 
 Run the `Xcode - Build` workflow with:
