@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
-import importlib.util
 import json
 import os
 import re
@@ -86,29 +85,16 @@ def run(
     return result
 
 
-def pymobiledevice3_command() -> list[str]:
-    configured = os.environ.get("PYMOBILEDEVICE3")
-    executable = configured or shutil.which("pymobiledevice3")
-    if executable:
-        return [executable]
-    if importlib.util.find_spec("pymobiledevice3") is not None:
-        return [sys.executable, "-m", "pymobiledevice3"]
-    raise DeploymentError(
-        "pymobiledevice3 was not found. Install it in the runner environment "
-        "or set PYMOBILEDEVICE3 to its executable."
-    )
-
-
-def parse_pymobiledevice3_devices(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, list):
+def parse_discovered_devices(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("devices"), list):
         raise DeploymentError("pymobiledevice3 discovery returned an unexpected payload")
     candidates = []
-    for device in payload:
+    for device in payload["devices"]:
         if not isinstance(device, dict):
             continue
-        product_type = str(device.get("ProductType") or "")
-        device_class = str(device.get("DeviceClass") or "")
-        identifier = str(device.get("UniqueDeviceID") or "")
+        product_type = str(device.get("productType") or "")
+        device_class = str(device.get("deviceClass") or "")
+        identifier = str(device.get("identifier") or "")
         if not identifier:
             continue
         if device_class != "iPad" and not product_type.startswith("iPad"):
@@ -116,59 +102,24 @@ def parse_pymobiledevice3_devices(payload: Any) -> list[dict[str, Any]]:
         candidates.append(
             {
                 "identifier": identifier,
-                "name": str(device.get("DeviceName") or product_type or identifier),
-                "host": device.get("ip"),
-            }
-        )
-    return candidates
-
-
-def parse_remote_pairing_devices(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, dict):
-        raise DeploymentError("pymobiledevice3 RemotePairing discovery returned an unexpected payload")
-    devices = payload.get("wifi", [])
-    if not isinstance(devices, list):
-        raise DeploymentError("pymobiledevice3 RemotePairing discovery did not return a Wi-Fi device list")
-
-    candidates = []
-    for device in devices:
-        if not isinstance(device, dict):
-            continue
-        identifier = str(device.get("identifier") or "")
-        if not identifier:
-            continue
-        candidates.append(
-            {
-                "identifier": identifier,
-                "name": f"RemotePairing iPad {identifier[-8:]}",
-                "host": device.get("address"),
+                "name": str(device.get("name") or product_type or identifier),
+                "host": device.get("host"),
             }
         )
     return candidates
 
 
 def select_pymobiledevice3_device() -> dict[str, Any]:
-    executable = pymobiledevice3_command()
+    helper = Path(__file__).with_name("discover_ios_devices.py")
     result = run(
-        [*executable, "--no-color", "bonjour", "mobdev2", "--timeout", "5"],
+        [sys.executable, str(helper), "--timeout", "5"],
         timeout=30,
+        check=False,
     )
     try:
-        candidates = parse_pymobiledevice3_devices(json.loads(result.stdout))
+        candidates = parse_discovered_devices(json.loads(result.stdout))
     except json.JSONDecodeError as error:
         raise DeploymentError(f"Could not parse pymobiledevice3 discovery output: {result.stdout}") from error
-
-    if not candidates:
-        remote_result = run(
-            [*executable, "--no-color", "remote", "browse", "--timeout", "8"],
-            timeout=30,
-        )
-        try:
-            candidates = parse_remote_pairing_devices(json.loads(remote_result.stdout))
-        except json.JSONDecodeError as error:
-            raise DeploymentError(
-                f"Could not parse pymobiledevice3 RemotePairing discovery output: {remote_result.stdout}"
-            ) from error
 
     if len(candidates) != 1:
         names = ", ".join(item["name"] or item["identifier"] for item in candidates) or "none"

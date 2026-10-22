@@ -46,24 +46,26 @@ class CanonicalRequestTests(unittest.TestCase):
             )
 
     def test_pymobiledevice3_discovery_keeps_only_ipads(self):
-        payload = [
-            {
-                "UniqueDeviceID": "ipad-udid",
-                "DeviceName": "Test iPad",
-                "DeviceClass": "iPad",
-                "ProductType": "iPad14,8",
-                "ip": "192.0.2.10",
-            },
-            {
-                "UniqueDeviceID": "iphone-udid",
-                "DeviceName": "Test iPhone",
-                "DeviceClass": "iPhone",
-                "ProductType": "iPhone17,1",
-                "ip": "192.0.2.11",
-            },
-        ]
+        payload = {
+            "devices": [
+                {
+                    "identifier": "ipad-udid",
+                    "name": "Test iPad",
+                    "deviceClass": "iPad",
+                    "productType": "iPad14,8",
+                    "host": "192.0.2.10",
+                },
+                {
+                    "identifier": "iphone-udid",
+                    "name": "Test iPhone",
+                    "deviceClass": "iPhone",
+                    "productType": "iPhone17,1",
+                    "host": "192.0.2.11",
+                },
+            ]
+        }
         self.assertEqual(
-            deploy.parse_pymobiledevice3_devices(payload),
+            deploy.parse_discovered_devices(payload),
             [
                 {
                     "identifier": "ipad-udid",
@@ -75,17 +77,19 @@ class CanonicalRequestTests(unittest.TestCase):
 
     def test_remote_pairing_discovery_uses_wifi_devices(self):
         payload = {
-            "usb": [],
-            "wifi": [
+            "devices": [
                 {
                     "identifier": "00008112-000E61640A47A01E",
-                    "address": "192.0.2.10",
-                    "port": 49152,
+                    "name": "RemotePairing iPad 0A47A01E",
+                    "deviceClass": "iPad",
+                    "productType": "",
+                    "host": "192.0.2.10",
+                    "transport": "remotepairing",
                 }
-            ],
+            ]
         }
         self.assertEqual(
-            deploy.parse_remote_pairing_devices(payload),
+            deploy.parse_discovered_devices(payload),
             [
                 {
                     "identifier": "00008112-000E61640A47A01E",
