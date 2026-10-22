@@ -105,6 +105,9 @@ fi
   fi
 } >"$RUNNER_ROOT/runner.env"
 
+mkdir -p "$RUNNER_ROOT/noname-deploy"
+cp "$SCRIPT_DIR/pair_host.py" "$RUNNER_ROOT/noname-deploy/pair_host.py"
+
 if [[ -f "$RUNNER_ROOT/runner.pid" ]]; then
   old_pid="$(cat "$RUNNER_ROOT/runner.pid")"
   if kill -0 "$old_pid" 2>/dev/null; then

@@ -52,7 +52,7 @@ the same user that owns the runner:
 
 ```bash
 source "$RUNNER_ROOT/runner.env"
-"$NONAME_DEPLOY_PYTHON" -m pymobiledevice3 remote pair-host \
+"$NONAME_DEPLOY_PYTHON" "$RUNNER_ROOT/noname-deploy/pair_host.py" \
   --name Synology-Noname --timeout 300
 ```
 
