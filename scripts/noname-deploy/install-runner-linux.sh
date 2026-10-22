@@ -36,6 +36,13 @@ if ! command -v ldd >/dev/null 2>&1; then
   export PATH="$RUNNER_ROOT/.tools:$PATH"
 fi
 
+if ! command -v ldconfig >/dev/null 2>&1 && [[ ! -x /sbin/ldconfig ]]; then
+  mkdir -p "$RUNNER_ROOT/.tools"
+  cp "$SCRIPT_DIR/ldconfig-shim.sh" "$RUNNER_ROOT/.tools/ldconfig"
+  chmod +x "$RUNNER_ROOT/.tools/ldconfig"
+  export PATH="$RUNNER_ROOT/.tools:$PATH"
+fi
+
 archive="actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz"
 download="${RUNNER_DOWNLOAD_URL:-https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${archive}}"
 
@@ -73,9 +80,30 @@ if [[ ! -f .runner ]]; then
     --labels "$RUNNER_LABEL"
 fi
 
-python3 -m venv "$RUNNER_ROOT/.pmd3"
-"$RUNNER_ROOT/.pmd3/bin/python" -m pip install --disable-pip-version-check \
-  "pymobiledevice3==${PYMOBILEDEVICE3_VERSION}"
+if python3 -m venv "$RUNNER_ROOT/.pmd3"; then
+  deploy_python="$RUNNER_ROOT/.pmd3/bin/python"
+  deploy_pythonpath=""
+  "$deploy_python" -m pip install --disable-pip-version-check \
+    "pymobiledevice3==${PYMOBILEDEVICE3_VERSION}"
+else
+  rm -rf "$RUNNER_ROOT/.pmd3"
+  package_root="$RUNNER_ROOT/.python-packages"
+  deploy_python="$(command -v python3)"
+  deploy_pythonpath="$package_root"
+  mkdir -p "$package_root"
+  "$deploy_python" -m pip install --disable-pip-version-check --target "$package_root" \
+    --no-deps "pymobiledevice3==${PYMOBILEDEVICE3_VERSION}"
+  "$deploy_python" -m pip install --disable-pip-version-check --target "$package_root" \
+    -r "$SCRIPT_DIR/requirements-noname-deploy.txt"
+fi
+
+{
+  printf 'export NONAME_DEPLOY_PYTHON=%q\n' "$deploy_python"
+  printf 'export PYMOBILEDEVICE3_RECONNECT=1\n'
+  if [[ -n "$deploy_pythonpath" ]]; then
+    printf 'export PYTHONPATH=%q\n' "$deploy_pythonpath"
+  fi
+} >"$RUNNER_ROOT/runner.env"
 
 if [[ -f "$RUNNER_ROOT/runner.pid" ]]; then
   old_pid="$(cat "$RUNNER_ROOT/runner.pid")"
@@ -85,11 +113,11 @@ if [[ -f "$RUNNER_ROOT/runner.pid" ]]; then
   fi
 fi
 
-nohup env \
-  NONAME_DEPLOY_PYTHON="$RUNNER_ROOT/.pmd3/bin/python" \
-  PYMOBILEDEVICE3="$RUNNER_ROOT/.pmd3/bin/pymobiledevice3" \
-  PYMOBILEDEVICE3_RECONNECT=1 \
-  "$RUNNER_ROOT/run.sh" >"$RUNNER_ROOT/runner.log" 2>&1 &
+set -a
+# shellcheck disable=SC1091
+source "$RUNNER_ROOT/runner.env"
+set +a
+nohup "$RUNNER_ROOT/run.sh" >"$RUNNER_ROOT/runner.log" 2>&1 &
 echo $! >"$RUNNER_ROOT/runner.pid"
 
 echo "Runner started as PID $(cat "$RUNNER_ROOT/runner.pid")."

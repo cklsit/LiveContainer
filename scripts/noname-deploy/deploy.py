@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import re
@@ -85,15 +86,17 @@ def run(
     return result
 
 
-def pymobiledevice3_executable() -> str:
+def pymobiledevice3_command() -> list[str]:
     configured = os.environ.get("PYMOBILEDEVICE3")
     executable = configured or shutil.which("pymobiledevice3")
-    if not executable:
-        raise DeploymentError(
-            "pymobiledevice3 was not found. Install it in the runner environment "
-            "or set PYMOBILEDEVICE3 to its executable."
-        )
-    return executable
+    if executable:
+        return [executable]
+    if importlib.util.find_spec("pymobiledevice3") is not None:
+        return [sys.executable, "-m", "pymobiledevice3"]
+    raise DeploymentError(
+        "pymobiledevice3 was not found. Install it in the runner environment "
+        "or set PYMOBILEDEVICE3 to its executable."
+    )
 
 
 def parse_pymobiledevice3_devices(payload: Any) -> list[dict[str, Any]]:
@@ -145,9 +148,9 @@ def parse_remote_pairing_devices(payload: Any) -> list[dict[str, Any]]:
 
 
 def select_pymobiledevice3_device() -> dict[str, Any]:
-    executable = pymobiledevice3_executable()
+    executable = pymobiledevice3_command()
     result = run(
-        [executable, "--no-color", "bonjour", "mobdev2", "--timeout", "5"],
+        [*executable, "--no-color", "bonjour", "mobdev2", "--timeout", "5"],
         timeout=30,
     )
     try:
@@ -157,7 +160,7 @@ def select_pymobiledevice3_device() -> dict[str, Any]:
 
     if not candidates:
         remote_result = run(
-            [executable, "--no-color", "remote", "browse", "--timeout", "8"],
+            [*executable, "--no-color", "remote", "browse", "--timeout", "8"],
             timeout=30,
         )
         try:

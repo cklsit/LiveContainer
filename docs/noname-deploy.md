@@ -44,13 +44,15 @@ RUNNER_TOKEN="<short-lived-token>" \
 ```
 
 The registration token is short-lived. Do not commit it or place it in workflow
-YAML.
+YAML. If the host Python lacks `venv`, install its `pip` package first; the
+installer then uses an isolated `--target` package directory.
 
 For iOS 27 and newer, create the one-time RemotePairing trust relationship with
 the same user that owns the runner:
 
 ```bash
-"$RUNNER_ROOT/.pmd3/bin/pymobiledevice3" remote pair-host \
+source "$RUNNER_ROOT/runner.env"
+"$NONAME_DEPLOY_PYTHON" -m pymobiledevice3 remote pair-host \
   --name Synology-Noname --timeout 300
 ```
 
