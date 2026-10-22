@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_URL="${REPO_URL:-https://github.com/cklsit/noname}"
 RUNNER_NAME="${RUNNER_NAME:-noname-ios-$(hostname -s)}"
 RUNNER_LABEL="${RUNNER_LABEL:-noname-ios-deploy}"
@@ -28,24 +29,38 @@ esac
 mkdir -p "$RUNNER_ROOT"
 cd "$RUNNER_ROOT"
 
+if ! command -v ldd >/dev/null 2>&1; then
+  mkdir -p "$RUNNER_ROOT/.tools"
+  cp "$SCRIPT_DIR/ldd-shim.sh" "$RUNNER_ROOT/.tools/ldd"
+  chmod +x "$RUNNER_ROOT/.tools/ldd"
+  export PATH="$RUNNER_ROOT/.tools:$PATH"
+fi
+
 archive="actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz"
 download="${RUNNER_DOWNLOAD_URL:-https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${archive}}"
 
 if [[ ! -f .runner ]]; then
-  if [[ -f "$archive" ]]; then
-    curl --http1.1 -C - --retry 8 --retry-all-errors --connect-timeout 20 \
-      -fL "$download" -o "$archive" || true
-  else
-    curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
-      -fL "$download" -o "$archive"
+  archive_ok() {
+    [[ -f "$archive" ]] && echo "${runner_sha256}  ${archive}" | sha256sum -c - >/dev/null 2>&1
+  }
+
+  if ! archive_ok; then
+    if [[ -f "$archive" ]]; then
+      curl --http1.1 -C - --retry 8 --retry-all-errors --connect-timeout 20 \
+        -fL "$download" -o "$archive" || true
+    else
+      curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
+        -fL "$download" -o "$archive"
+    fi
   fi
 
-  if ! echo "${runner_sha256}  ${archive}" | sha256sum -c -; then
+  if ! archive_ok; then
     rm -f "$archive"
     curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
       -fL "$download" -o "$archive"
-    echo "${runner_sha256}  ${archive}" | sha256sum -c -
+    archive_ok
   fi
+
   tar -xzf "$archive"
   rm -f "$archive"
 
