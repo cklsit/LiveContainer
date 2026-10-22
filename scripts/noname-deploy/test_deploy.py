@@ -73,6 +73,28 @@ class CanonicalRequestTests(unittest.TestCase):
             ],
         )
 
+    def test_remote_pairing_discovery_uses_wifi_devices(self):
+        payload = {
+            "usb": [],
+            "wifi": [
+                {
+                    "identifier": "00008112-000E61640A47A01E",
+                    "address": "192.0.2.10",
+                    "port": 49152,
+                }
+            ],
+        }
+        self.assertEqual(
+            deploy.parse_remote_pairing_devices(payload),
+            [
+                {
+                    "identifier": "00008112-000E61640A47A01E",
+                    "name": "RemotePairing iPad 0A47A01E",
+                    "host": "192.0.2.10",
+                }
+            ],
+        )
+
     def test_command_errors_redact_secrets(self):
         secret = "sensitive-launch-token"
         completed = deploy.subprocess.CompletedProcess(

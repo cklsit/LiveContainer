@@ -120,6 +120,30 @@ def parse_pymobiledevice3_devices(payload: Any) -> list[dict[str, Any]]:
     return candidates
 
 
+def parse_remote_pairing_devices(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise DeploymentError("pymobiledevice3 RemotePairing discovery returned an unexpected payload")
+    devices = payload.get("wifi", [])
+    if not isinstance(devices, list):
+        raise DeploymentError("pymobiledevice3 RemotePairing discovery did not return a Wi-Fi device list")
+
+    candidates = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        identifier = str(device.get("identifier") or "")
+        if not identifier:
+            continue
+        candidates.append(
+            {
+                "identifier": identifier,
+                "name": f"RemotePairing iPad {identifier[-8:]}",
+                "host": device.get("address"),
+            }
+        )
+    return candidates
+
+
 def select_pymobiledevice3_device() -> dict[str, Any]:
     executable = pymobiledevice3_executable()
     result = run(
@@ -130,6 +154,18 @@ def select_pymobiledevice3_device() -> dict[str, Any]:
         candidates = parse_pymobiledevice3_devices(json.loads(result.stdout))
     except json.JSONDecodeError as error:
         raise DeploymentError(f"Could not parse pymobiledevice3 discovery output: {result.stdout}") from error
+
+    if not candidates:
+        remote_result = run(
+            [executable, "--no-color", "remote", "browse", "--timeout", "8"],
+            timeout=30,
+        )
+        try:
+            candidates = parse_remote_pairing_devices(json.loads(remote_result.stdout))
+        except json.JSONDecodeError as error:
+            raise DeploymentError(
+                f"Could not parse pymobiledevice3 RemotePairing discovery output: {remote_result.stdout}"
+            ) from error
 
     if len(candidates) != 1:
         names = ", ".join(item["name"] or item["identifier"] for item in candidates) or "none"
@@ -203,20 +239,19 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         )
         return
 
-    executable = pymobiledevice3_executable()
     environment = os.environ.copy()
-    environment["PYMOBILEDEVICE3_UDID"] = device_id
-    environment.setdefault("PYMOBILEDEVICE3_RECONNECT", "1")
+    environment["NONAME_DEPLOY_TOKEN"] = token
+    helper = Path(__file__).with_name("launch_ios_app.py")
     run(
         [
-            executable,
-            "--no-color",
-            "developer",
-            "core-device",
-            "launch-application",
-            "--userspace",
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--bundle-id",
             HOST_BUNDLE_ID,
-            f"noname-deploy-token={token}",
+            "--token-env",
+            "NONAME_DEPLOY_TOKEN",
         ],
         timeout=120,
         env=environment,

@@ -5,6 +5,7 @@ REPO_URL="${REPO_URL:-https://github.com/cklsit/noname}"
 RUNNER_NAME="${RUNNER_NAME:-noname-ios-$(hostname -s)}"
 RUNNER_LABEL="${RUNNER_LABEL:-noname-ios-deploy}"
 RUNNER_ROOT="${RUNNER_ROOT:-$HOME/actions-runner-noname}"
+RUNNER_VERSION="${RUNNER_VERSION:-2.338.1}"
 PYMOBILEDEVICE3_VERSION="${PYMOBILEDEVICE3_VERSION:-11.43.1}"
 
 if [[ -z "${RUNNER_TOKEN:-}" ]]; then
@@ -13,25 +14,38 @@ if [[ -z "${RUNNER_TOKEN:-}" ]]; then
 fi
 
 case "$(uname -m)" in
-  aarch64|arm64) runner_arch=arm64 ;;
-  x86_64|amd64) runner_arch=x64 ;;
+  aarch64|arm64)
+    runner_arch=arm64
+    runner_sha256="${RUNNER_SHA256:-475e0c149fd3b611610127b9664ba5bacf5c6928795cc448ab520bb5f324bede}"
+    ;;
+  x86_64|amd64)
+    runner_arch=x64
+    runner_sha256="${RUNNER_SHA256:-08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37}"
+    ;;
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
 mkdir -p "$RUNNER_ROOT"
 cd "$RUNNER_ROOT"
 
-latest="$(
-  curl --http1.1 --retry 8 --retry-all-errors -fsSL \
-    https://api.github.com/repos/actions/runner/releases/latest |
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))'
-)"
-archive="actions-runner-linux-${runner_arch}-${latest}.tar.gz"
-download="https://github.com/actions/runner/releases/download/v${latest}/${archive}"
+archive="actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz"
+download="${RUNNER_DOWNLOAD_URL:-https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${archive}}"
 
 if [[ ! -f .runner ]]; then
-  curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
-    -fL "$download" -o "$archive"
+  if [[ -f "$archive" ]]; then
+    curl --http1.1 -C - --retry 8 --retry-all-errors --connect-timeout 20 \
+      -fL "$download" -o "$archive" || true
+  else
+    curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
+      -fL "$download" -o "$archive"
+  fi
+
+  if ! echo "${runner_sha256}  ${archive}" | sha256sum -c -; then
+    rm -f "$archive"
+    curl --http1.1 --retry 8 --retry-all-errors --connect-timeout 20 \
+      -fL "$download" -o "$archive"
+    echo "${runner_sha256}  ${archive}" | sha256sum -c -
+  fi
   tar -xzf "$archive"
   rm -f "$archive"
 
