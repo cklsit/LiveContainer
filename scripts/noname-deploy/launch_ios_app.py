@@ -99,7 +99,12 @@ async def launch(udid: str, bundle_id: str, arguments: list[str]) -> dict[str, A
         await tunnel.aclose()
 
 
-async def open_url(udid: str, bundle_id: str, payload_url: str) -> dict[str, Any]:
+async def open_url(
+    udid: str,
+    bundle_id: str,
+    payload_url: str,
+    arguments: list[str],
+) -> dict[str, Any]:
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
@@ -117,7 +122,7 @@ async def open_url(udid: str, bundle_id: str, payload_url: str) -> dict[str, Any
                         "bundleIdentifier": {"_0": resolved_bundle_id},
                     },
                     "options": {
-                        "arguments": [],
+                        "arguments": arguments,
                         "environmentVariables": {},
                         "standardIOUsesPseudoterminals": True,
                         "startStopped": False,
@@ -235,6 +240,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-env")
     parser.add_argument("--list-apps", action="store_true")
     parser.add_argument("--open-url")
+    parser.add_argument("--skip-install-confirmation", action="store_true")
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
     parser.add_argument("--accessibility-list", action="store_true")
@@ -268,7 +274,8 @@ def main() -> int:
             result = asyncio.run(list_apps(args.udid))
         elif args.open_url:
             assert args.bundle_id is not None
-            result = asyncio.run(open_url(args.udid, args.bundle_id, args.open_url))
+            arguments = ["-isInstallConfirmationEnabled", "false"] if args.skip_install_confirmation else []
+            result = asyncio.run(open_url(args.udid, args.bundle_id, args.open_url, arguments))
         elif args.screenshot is not None or args.tap is not None:
             tap = tuple(args.tap) if args.tap is not None else None
             result = asyncio.run(
