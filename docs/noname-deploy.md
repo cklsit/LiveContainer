@@ -100,6 +100,9 @@ Optional inputs:
 
 The source IPA is deleted after the deployment attempt unless `--keep-ipa` is
 set. The runner also stops its temporary HTTP server on every exit path.
+For Actions workflows, the reusable action can download the artifact directly
+on the LAN runner with parallel byte ranges. This avoids the slow default
+artifact download path for large IPA files.
 Before relaunching LiveContainer, the runner opens LocalDevVPN and allows the
 configured tunnel to resume. SideStore's uninstall and signing operations rely
 on that connection.
