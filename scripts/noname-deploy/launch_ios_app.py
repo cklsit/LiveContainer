@@ -32,7 +32,7 @@ async def create_mobdev2_tunnel_provider(serial: str | None, _autopair: bool, _f
             break
         return provider, lockdown
 
-    services = await tunnel_service.get_remote_pairing_tunnel_services(udid=serial, timeout=8)
+    services = await tunnel_service.get_remote_pairing_tunnel_services(udid=serial, bonjour_timeout=8)
     if not services:
         raise LaunchError(
             f"No RemotePairing tunnel is available for {serial}. "

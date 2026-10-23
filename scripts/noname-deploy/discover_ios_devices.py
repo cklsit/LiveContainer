@@ -40,7 +40,7 @@ async def discover(udid: str | None, timeout: float) -> list[dict[str, str]]:
     try:
         services = await tunnel_service.get_remote_pairing_tunnel_services(
             udid=udid,
-            timeout=timeout,
+            bonjour_timeout=timeout,
         )
         for service in services:
             try:
