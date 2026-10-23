@@ -61,17 +61,41 @@ async def launch(udid: str, bundle_id: str, arguments: list[str]) -> dict[str, A
         await tunnel.aclose()
 
 
+async def list_apps(udid: str) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with AppServiceService(rsd) as app_service:
+            apps = await app_service.list_apps()
+            identifiers = sorted(
+                {
+                    str(app.get("bundleIdentifier"))
+                    for app in apps
+                    if isinstance(app, dict) and app.get("bundleIdentifier")
+                }
+            )
+            return {"ok": True, "bundleIdentifiers": identifiers}
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
-    parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--bundle-id")
     parser.add_argument("--token-env")
+    parser.add_argument("--list-apps", action="store_true")
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if not args.list_apps and not args.bundle_id:
+        print("error: --bundle-id is required unless --list-apps is used", file=sys.stderr)
+        return 1
     if args.token_env:
         token = os.environ.get(args.token_env, "")
         if len(token) < 32:
@@ -79,7 +103,11 @@ def main() -> int:
             return 1
         args.argument.append(f"noname-deploy-token={token}")
     try:
-        result = asyncio.run(launch(args.udid, args.bundle_id, args.argument))
+        if args.list_apps:
+            result = asyncio.run(list_apps(args.udid))
+        else:
+            assert args.bundle_id is not None
+            result = asyncio.run(launch(args.udid, args.bundle_id, args.argument))
     except Exception as error:
         if os.environ.get("NONAME_DEPLOY_DEBUG") == "1":
             traceback.print_exc()
