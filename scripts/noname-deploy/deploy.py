@@ -217,6 +217,18 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             str(helper),
             "--udid",
             device_id,
+            "--hold-awake",
+            "1800",
+        ],
+        timeout=120,
+        env=environment,
+    )
+    run(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
             "--bundle-id",
             LOCAL_DEV_VPN_BUNDLE_ID,
         ],
