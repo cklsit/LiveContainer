@@ -31,3 +31,4 @@ srptools
 typer>=0.25
 typer-injector>=0.3.0
 typing_extensions>=4.1.0
+wsproto

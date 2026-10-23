@@ -22,6 +22,7 @@ from pymobiledevice3.remote.core_device.hid_service import (
     touch_session,
 )
 from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
+from pymobiledevice3.services.springboard import SpringBoardServicesService
 
 
 class LaunchError(RuntimeError):
@@ -155,6 +156,11 @@ async def control_device(
     try:
         rsd = await tunnel.aopen()
         result: dict[str, Any] = {"ok": True}
+        try:
+            async with SpringBoardServicesService(rsd) as springboard:
+                result["orientation"] = int(await springboard.get_interface_orientation())
+        except Exception:
+            pass
         if screenshot is not None:
             async with ScreenCaptureService(rsd) as service:
                 response = await service.capture_screenshot()
