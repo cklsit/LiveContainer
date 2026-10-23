@@ -17,8 +17,11 @@ from pymobiledevice3.lockdown import get_mobdev2_lockdowns
 from pymobiledevice3.remote import tunnel_service, userspace_tunnel
 from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.remote.core_device.hid_service import (
+    HID_BUTTON_STATE_DOWN,
+    HID_BUTTON_STATE_UP,
     TOUCHSCREEN_STATE_CONTACT,
     TOUCHSCREEN_STATE_RELEASE,
+    IndigoHIDService,
     touch_session,
 )
 from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
@@ -205,6 +208,26 @@ async def accessibility_action(
         await tunnel.aclose()
 
 
+async def press_button(udid: str, button: str) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        usage = {
+            "home": (0x0C, 0x40, 0.05),
+            "lock": (0x0C, 0x30, 0.5),
+        }[button]
+        usage_page, usage_code, hold = usage
+        async with IndigoHIDService(rsd) as service:
+            await service.send_button(usage_page, usage_code, HID_BUTTON_STATE_DOWN)
+            await asyncio.sleep(hold)
+            await service.send_button(usage_page, usage_code, HID_BUTTON_STATE_UP)
+        return {"ok": True, "button": button}
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
@@ -216,6 +239,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
     parser.add_argument("--accessibility-list", action="store_true")
     parser.add_argument("--accessibility-press")
+    parser.add_argument("--button", choices=("home", "lock"))
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
@@ -228,6 +252,7 @@ def main() -> int:
         and args.tap is None
         and not args.accessibility_list
         and args.accessibility_press is None
+        and args.button is None
         and not args.bundle_id
     ):
         print("error: --bundle-id is required unless --list-apps is used", file=sys.stderr)
@@ -261,6 +286,8 @@ def main() -> int:
                     press_label=args.accessibility_press,
                 )
             )
+        elif args.button:
+            result = asyncio.run(press_button(args.udid, args.button))
         else:
             assert args.bundle_id is not None
             result = asyncio.run(launch(args.udid, args.bundle_id, args.argument))
