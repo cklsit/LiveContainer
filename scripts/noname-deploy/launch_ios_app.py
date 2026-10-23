@@ -10,11 +10,18 @@ import os
 import plistlib
 import sys
 import traceback
+from pathlib import Path
 from typing import Any
 
 from pymobiledevice3.lockdown import get_mobdev2_lockdowns
 from pymobiledevice3.remote import tunnel_service, userspace_tunnel
 from pymobiledevice3.remote.core_device.app_service import AppServiceService
+from pymobiledevice3.remote.core_device.hid_service import (
+    TOUCHSCREEN_STATE_CONTACT,
+    TOUCHSCREEN_STATE_RELEASE,
+    touch_session,
+)
+from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
 
 
 class LaunchError(RuntimeError):
@@ -136,6 +143,36 @@ async def list_apps(udid: str) -> dict[str, Any]:
         await tunnel.aclose()
 
 
+async def control_device(
+    udid: str,
+    *,
+    screenshot: Path | None,
+    tap: tuple[int, int] | None,
+) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        result: dict[str, Any] = {"ok": True}
+        if screenshot is not None:
+            async with ScreenCaptureService(rsd) as service:
+                response = await service.capture_screenshot()
+            screenshot.parent.mkdir(parents=True, exist_ok=True)
+            screenshot.write_bytes(response["image"])
+            result["screenshot"] = str(screenshot)
+        if tap is not None:
+            x, y = tap
+            async with touch_session(rsd) as service:
+                await service.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y)
+                await asyncio.sleep(0.05)
+                await service.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y)
+            result["tap"] = [x, y]
+        return result
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
@@ -143,13 +180,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-env")
     parser.add_argument("--list-apps", action="store_true")
     parser.add_argument("--open-url")
+    parser.add_argument("--screenshot", type=Path)
+    parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if not args.list_apps and not args.bundle_id:
+    if not args.list_apps and args.screenshot is None and args.tap is None and not args.bundle_id:
         print("error: --bundle-id is required unless --list-apps is used", file=sys.stderr)
         return 1
     if args.token_env:
@@ -164,6 +203,15 @@ def main() -> int:
         elif args.open_url:
             assert args.bundle_id is not None
             result = asyncio.run(open_url(args.udid, args.bundle_id, args.open_url))
+        elif args.screenshot is not None or args.tap is not None:
+            tap = tuple(args.tap) if args.tap is not None else None
+            result = asyncio.run(
+                control_device(
+                    args.udid,
+                    screenshot=args.screenshot,
+                    tap=tap,
+                )
+            )
         else:
             assert args.bundle_id is not None
             result = asyncio.run(launch(args.udid, args.bundle_id, args.argument))
