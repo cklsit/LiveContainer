@@ -26,6 +26,7 @@ from pymobiledevice3.remote.core_device.hid_service import (
 )
 from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
 from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
+from pymobiledevice3.services.power_assertion import PowerAssertionService
 
 
 class LaunchError(RuntimeError):
@@ -233,6 +234,24 @@ async def press_button(udid: str, button: str) -> dict[str, Any]:
         await tunnel.aclose()
 
 
+async def hold_awake(udid: str, timeout: int) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with PowerAssertionService(rsd) as service:
+            async with service.create_power_assertion(
+                "PreventUserIdleSystemSleep",
+                "Noname Deployment",
+                timeout,
+            ):
+                await asyncio.sleep(0.1)
+        return {"ok": True, "timeout": timeout}
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
@@ -246,6 +265,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--accessibility-list", action="store_true")
     parser.add_argument("--accessibility-press")
     parser.add_argument("--button", choices=("home", "lock"))
+    parser.add_argument("--hold-awake", type=int)
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
@@ -259,6 +279,7 @@ def main() -> int:
         and not args.accessibility_list
         and args.accessibility_press is None
         and args.button is None
+        and args.hold_awake is None
         and not args.bundle_id
     ):
         print("error: --bundle-id is required unless --list-apps is used", file=sys.stderr)
@@ -295,6 +316,8 @@ def main() -> int:
             )
         elif args.button:
             result = asyncio.run(press_button(args.udid, args.button))
+        elif args.hold_awake:
+            result = asyncio.run(hold_awake(args.udid, args.hold_awake))
         else:
             assert args.bundle_id is not None
             result = asyncio.run(launch(args.udid, args.bundle_id, args.argument))
