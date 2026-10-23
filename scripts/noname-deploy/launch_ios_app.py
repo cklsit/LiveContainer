@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import plistlib
@@ -16,6 +17,7 @@ from typing import Any
 from pymobiledevice3.lockdown import get_mobdev2_lockdowns
 from pymobiledevice3.remote import tunnel_service, userspace_tunnel
 from pymobiledevice3.remote.core_device.app_service import AppServiceService
+from pymobiledevice3.remote.core_device.file_service import Domain, FileServiceService
 from pymobiledevice3.remote.core_device.hid_service import (
     HID_BUTTON_STATE_DOWN,
     HID_BUTTON_STATE_UP,
@@ -280,6 +282,39 @@ async def hold_awake(udid: str, timeout: int) -> dict[str, Any]:
         await tunnel.aclose()
 
 
+async def container_file_action(
+    udid: str,
+    bundle_id: str,
+    *,
+    list_path: str | None,
+    read_path: str | None,
+) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with AppServiceService(rsd) as app_service:
+            resolved_bundle_id = resolve_bundle_id(bundle_id, await installed_bundle_ids(app_service))
+        async with FileServiceService(
+            rsd,
+            Domain.APP_DATA_CONTAINER,
+            identifier=resolved_bundle_id,
+        ) as service:
+            result: dict[str, Any] = {"ok": True, "bundleID": resolved_bundle_id}
+            if list_path is not None:
+                result["entries"] = await service.retrieve_directory_list(list_path)
+            if read_path is not None:
+                data = await service.retrieve_file(read_path)
+                try:
+                    result["text"] = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    result["base64"] = base64.b64encode(data).decode()
+            return result
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
@@ -287,6 +322,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-env")
     parser.add_argument("--list-apps", action="store_true")
     parser.add_argument("--app-info", action="store_true")
+    parser.add_argument("--container-id")
+    parser.add_argument("--container-list")
+    parser.add_argument("--container-read")
     parser.add_argument("--open-url")
     parser.add_argument("--skip-install-confirmation", action="store_true")
     parser.add_argument("--screenshot", type=Path)
@@ -304,6 +342,8 @@ def main() -> int:
     if (
         not args.list_apps
         and not args.app_info
+        and args.container_list is None
+        and args.container_read is None
         and args.screenshot is None
         and args.tap is None
         and not args.accessibility_list
@@ -325,6 +365,18 @@ def main() -> int:
             result = asyncio.run(list_apps(args.udid))
         elif args.app_info:
             result = asyncio.run(app_info(args.udid))
+        elif args.container_list is not None or args.container_read is not None:
+            if not args.container_id:
+                print("error: --container-id is required for container access", file=sys.stderr)
+                return 1
+            result = asyncio.run(
+                container_file_action(
+                    args.udid,
+                    args.container_id,
+                    list_path=args.container_list,
+                    read_path=args.container_read,
+                )
+            )
         elif args.open_url:
             assert args.bundle_id is not None
             arguments = ["-isInstallConfirmationEnabled", "false"] if args.skip_install_confirmation else []
