@@ -16,9 +16,15 @@ from launch_ios_app import hold_awake
 
 async def run(interval: int, assertion_timeout: int) -> None:
     while True:
+        try:
+            discovered = await discover(udid=None, timeout=4)
+        except Exception as error:
+            print(f"Discovery failed; retrying: {error}", flush=True)
+            await asyncio.sleep(interval)
+            continue
         devices = [
             device
-            for device in await discover(udid=None, timeout=4)
+            for device in discovered
             if device.get("deviceClass") == "iPad" or str(device.get("productType", "")).startswith("iPad")
         ]
         if len(devices) == 1:
