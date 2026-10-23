@@ -29,6 +29,10 @@ on:
         required: false
         default: LiveContainerSupport
 
+concurrency:
+  group: xcode-build-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build using xcodebuild command
