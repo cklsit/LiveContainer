@@ -22,6 +22,7 @@ from pymobiledevice3.remote.core_device.hid_service import (
     touch_session,
 )
 from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
+from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
 
 
 class LaunchError(RuntimeError):
@@ -173,6 +174,37 @@ async def control_device(
         await tunnel.aclose()
 
 
+async def accessibility_action(
+    udid: str,
+    *,
+    list_elements: bool,
+    press_label: str | None,
+) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        elements: list[dict[str, Any]] = []
+        pressed = False
+        async with AccessibilityAudit(rsd) as accessibility:
+            async for focused in accessibility.iter_elements():
+                item = focused.to_dict()
+                elements.append(item)
+                if press_label and (item.get("caption") or item.get("spoken_description")) == press_label:
+                    element = focused.element
+                    if element is None:
+                        raise LaunchError(f"Accessibility element {press_label!r} has no platform identifier")
+                    await accessibility.perform_press(element.identifier)
+                    pressed = True
+                    break
+                if not list_elements and press_label is None:
+                    break
+        return {"ok": True, "elements": elements, "pressed": pressed}
+    finally:
+        await tunnel.aclose()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--udid", required=True)
@@ -182,13 +214,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--open-url")
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
+    parser.add_argument("--accessibility-list", action="store_true")
+    parser.add_argument("--accessibility-press")
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if not args.list_apps and args.screenshot is None and args.tap is None and not args.bundle_id:
+    if (
+        not args.list_apps
+        and args.screenshot is None
+        and args.tap is None
+        and not args.accessibility_list
+        and args.accessibility_press is None
+        and not args.bundle_id
+    ):
         print("error: --bundle-id is required unless --list-apps is used", file=sys.stderr)
         return 1
     if args.token_env:
@@ -210,6 +251,14 @@ def main() -> int:
                     args.udid,
                     screenshot=args.screenshot,
                     tap=tap,
+                )
+            )
+        elif args.accessibility_list or args.accessibility_press:
+            result = asyncio.run(
+                accessibility_action(
+                    args.udid,
+                    list_elements=args.accessibility_list,
+                    press_label=args.accessibility_press,
                 )
             )
         else:
