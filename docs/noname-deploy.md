@@ -103,6 +103,11 @@ set. The runner also stops its temporary HTTP server on every exit path.
 Before relaunching LiveContainer, the runner opens LocalDevVPN and allows the
 configured tunnel to resume. SideStore's uninstall and signing operations rely
 on that connection.
+The Linux installer also starts a lightweight keep-awake process. While exactly
+one paired iPad is visible, it renews a `PreventUserIdleSystemSleep` assertion
+so normal idle sleep does not take the device off the network. This is
+best-effort: a powered-off device, disabled Wi-Fi, or active passcode lock still
+requires user action.
 
 ## Reusable action
 

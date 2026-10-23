@@ -8,6 +8,7 @@ RUNNER_LABEL="${RUNNER_LABEL:-noname-ios-deploy}"
 RUNNER_ROOT="${RUNNER_ROOT:-$HOME/actions-runner-noname}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.338.1}"
 PYMOBILEDEVICE3_VERSION="${PYMOBILEDEVICE3_VERSION:-11.43.1}"
+KEEP_IPAD_AWAKE="${KEEP_IPAD_AWAKE:-1}"
 
 if [[ -z "${RUNNER_TOKEN:-}" ]]; then
   echo "RUNNER_TOKEN is required" >&2
@@ -106,7 +107,12 @@ fi
 } >"$RUNNER_ROOT/runner.env"
 
 mkdir -p "$RUNNER_ROOT/noname-deploy"
-cp "$SCRIPT_DIR/pair_host.py" "$RUNNER_ROOT/noname-deploy/pair_host.py"
+cp \
+  "$SCRIPT_DIR/discover_ios_devices.py" \
+  "$SCRIPT_DIR/keep_device_awake.py" \
+  "$SCRIPT_DIR/launch_ios_app.py" \
+  "$SCRIPT_DIR/pair_host.py" \
+  "$RUNNER_ROOT/noname-deploy/"
 
 if [[ -f "$RUNNER_ROOT/runner.pid" ]]; then
   old_pid="$(cat "$RUNNER_ROOT/runner.pid")"
@@ -122,6 +128,19 @@ source "$RUNNER_ROOT/runner.env"
 set +a
 nohup "$RUNNER_ROOT/run.sh" >"$RUNNER_ROOT/runner.log" 2>&1 &
 echo $! >"$RUNNER_ROOT/runner.pid"
+
+if [[ "$KEEP_IPAD_AWAKE" == "1" ]]; then
+  if [[ -f "$RUNNER_ROOT/keep-awake.pid" ]]; then
+    old_keep_awake_pid="$(cat "$RUNNER_ROOT/keep-awake.pid")"
+    if kill -0 "$old_keep_awake_pid" 2>/dev/null; then
+      kill "$old_keep_awake_pid"
+      sleep 1
+    fi
+  fi
+  nohup "$NONAME_DEPLOY_PYTHON" "$RUNNER_ROOT/noname-deploy/keep_device_awake.py" \
+    >"$RUNNER_ROOT/keep-awake.log" 2>&1 &
+  echo $! >"$RUNNER_ROOT/keep-awake.pid"
+fi
 
 echo "Runner started as PID $(cat "$RUNNER_ROOT/runner.pid")."
 echo "Log: $RUNNER_ROOT/runner.log"

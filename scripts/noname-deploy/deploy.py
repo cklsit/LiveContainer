@@ -211,6 +211,45 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
 
     environment = os.environ.copy()
     helper = Path(__file__).with_name("launch_ios_app.py")
+    discovery_helper = Path(__file__).with_name("discover_ios_devices.py")
+    online_timeout = float(os.environ.get("NONAME_DEVICE_ONLINE_TIMEOUT", "300"))
+    deadline = time.monotonic() + online_timeout
+    while True:
+        discovery = run(
+            [
+                sys.executable,
+                str(discovery_helper),
+                "--udid",
+                device_id,
+                "--timeout",
+                "3",
+            ],
+            timeout=30,
+            env=environment,
+            check=False,
+        )
+        try:
+            devices = json.loads(discovery.stdout).get("devices", [])
+        except (json.JSONDecodeError, AttributeError):
+            devices = []
+        if any(device.get("identifier") == device_id for device in devices if isinstance(device, dict)):
+            break
+        if time.monotonic() >= deadline:
+            raise DeploymentError(f"Paired iPad {device_id} did not become reachable within {online_timeout:g}s")
+        time.sleep(2)
+
+    run(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--button",
+            "home",
+        ],
+        timeout=120,
+        env=environment,
+    )
     run(
         [
             sys.executable,
