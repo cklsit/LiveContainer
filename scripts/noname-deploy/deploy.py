@@ -285,7 +285,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             device_id,
             "--bundle-id",
             HOST_BUNDLE_ID,
-            "--token-env",
+            "--configure-token-env",
             "NONAME_DEPLOY_TOKEN",
         ],
         timeout=120,

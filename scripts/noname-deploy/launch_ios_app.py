@@ -11,6 +11,7 @@ import os
 import plistlib
 import sys
 import traceback
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -326,6 +327,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--container-list")
     parser.add_argument("--container-read")
     parser.add_argument("--open-url")
+    parser.add_argument("--configure-token-env")
     parser.add_argument("--skip-install-confirmation", action="store_true")
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
@@ -339,6 +341,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.configure_token_env:
+        token = os.environ.get(args.configure_token_env, "")
+        if len(token) < 32:
+            print(f"error: {args.configure_token_env} must contain a deployment token", file=sys.stderr)
+            return 1
+        query = urllib.parse.urlencode({"token": token})
+        args.open_url = f"sidestore://noname-deploy/configure?{query}"
     if (
         not args.list_apps
         and not args.app_info
@@ -381,6 +390,8 @@ def main() -> int:
             assert args.bundle_id is not None
             arguments = ["-isInstallConfirmationEnabled", "false"] if args.skip_install_confirmation else []
             result = asyncio.run(open_url(args.udid, args.bundle_id, args.open_url, arguments))
+            if args.configure_token_env:
+                result["payloadURL"] = "sidestore://noname-deploy/configure?token=<redacted>"
         elif args.screenshot is not None or args.tap is not None:
             tap = tuple(args.tap) if args.tap is not None else None
             result = asyncio.run(
