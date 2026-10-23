@@ -24,6 +24,7 @@ reinstall one allowlisted app on a paired iPad over the local network.
 - Python 3 and `pymobiledevice3`.
 - A Linux runner with RemotePairing and RemoteXPC access, or a macOS runner
   with Xcode `devicectl`.
+- LocalDevVPN installed and already authorized for its system VPN profile.
 - Exactly one paired iPad visible, or an explicit `--device-id`.
 
 The initial installation of LiveContainer+SideStore still requires the normal
@@ -75,6 +76,9 @@ sidestore_source_ref: feat/noname-auto-deploy
 
 The resulting `LiveContainer+SideStore.ipa` contains the deployment endpoint.
 Alternatively, pass a prebuilt modified IPA through `sidestore_ipa_url`.
+Install links containing `auto=1` start the existing SideStore installation
+pipeline without presenting the install confirmation dialog. Links without that
+flag retain the normal confirmation flow.
 
 ## Deploy an IPA
 
@@ -96,6 +100,9 @@ Optional inputs:
 
 The source IPA is deleted after the deployment attempt unless `--keep-ipa` is
 set. The runner also stops its temporary HTTP server on every exit path.
+Before relaunching LiveContainer, the runner opens LocalDevVPN and allows the
+configured tunnel to resume. SideStore's uninstall and signing operations rely
+on that connection.
 
 ## Reusable action
 

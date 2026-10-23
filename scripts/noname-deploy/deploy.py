@@ -30,6 +30,7 @@ SERVICE_TYPE = "_noname-deploy._tcp"
 SERVICE_DNS_TYPE = f"{SERVICE_TYPE}.local."
 DEFAULT_BUNDLE_ID = "com.libnoname.noname"
 HOST_BUNDLE_ID = "com.kdt.livecontainer"
+LOCAL_DEV_VPN_BUNDLE_ID = "com.jkcoxson.LocalDevVPN"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -172,6 +173,21 @@ def select_device(explicit_device: str | None) -> dict[str, Any]:
 
 def launch_configured_side_store(device_id: str, token: str) -> None:
     if sys.platform == "darwin":
+        run(
+            [
+                "xcrun",
+                "devicectl",
+                "device",
+                "process",
+                "launch",
+                "--device",
+                device_id,
+                "--terminate-existing",
+                LOCAL_DEV_VPN_BUNDLE_ID,
+            ],
+            timeout=60,
+        )
+        time.sleep(2)
         query = urllib.parse.urlencode({"token": token})
         payload_url = f"sidestore://noname-deploy/configure?{query}"
         run(
@@ -194,8 +210,22 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         return
 
     environment = os.environ.copy()
-    environment["NONAME_DEPLOY_TOKEN"] = token
     helper = Path(__file__).with_name("launch_ios_app.py")
+    run(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--bundle-id",
+            LOCAL_DEV_VPN_BUNDLE_ID,
+        ],
+        timeout=120,
+        env=environment,
+    )
+    time.sleep(2)
+
+    environment["NONAME_DEPLOY_TOKEN"] = token
     run(
         [
             sys.executable,
