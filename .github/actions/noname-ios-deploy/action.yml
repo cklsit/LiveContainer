@@ -49,7 +49,8 @@ runs:
             --repository "$ARTIFACT_REPOSITORY" \
             --run-id "${{ inputs.artifact-run-id }}" \
             --name "${{ inputs.artifact-name }}" \
-            --output-dir "$output_dir"
+            --output-dir "$output_dir" |
+            tail -n 1
         )"
         echo "NONAME_DOWNLOADED_IPA=$ipa_path" >> "$GITHUB_ENV"
 

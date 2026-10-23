@@ -162,7 +162,7 @@ def main() -> int:
             (index, start, min(start + CHUNK_SIZE - 1, size - 1))
             for index, start in enumerate(range(0, size, CHUNK_SIZE))
         ]
-        print(f"Downloading {size} bytes in {len(ranges)} ranges", flush=True)
+        print(f"Downloading {size} bytes in {len(ranges)} ranges", file=sys.stderr, flush=True)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
             futures = {
@@ -182,7 +182,7 @@ def main() -> int:
                 future.result()
                 done += 1
                 if done == len(futures) or done % max(1, len(futures) // 10) == 0:
-                    print(f"Downloaded {done}/{len(futures)} ranges", flush=True)
+                    print(f"Downloaded {done}/{len(futures)} ranges", file=sys.stderr, flush=True)
 
         archive = output_dir / "artifact.zip"
         with archive.open("wb") as output:
@@ -210,7 +210,7 @@ def main() -> int:
             actual = sha256_file(ipa)
             if actual != expected:
                 raise ArtifactError(f"IPA SHA-256 mismatch: {actual} != {expected}")
-            print(f"Verified SHA-256 {actual}", flush=True)
+            print(f"Verified SHA-256 {actual}", file=sys.stderr, flush=True)
 
         shutil.rmtree(part_dir)
         archive.unlink(missing_ok=True)
