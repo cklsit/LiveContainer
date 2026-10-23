@@ -245,6 +245,67 @@ async def accessibility_action(
         await tunnel.aclose()
 
 
+async def accessibility_captions(rsd: Any) -> list[str]:
+    captions: list[str] = []
+    async with AccessibilityAudit(rsd) as accessibility:
+        async for focused in accessibility.iter_elements():
+            item = focused.to_dict()
+            caption = str(item.get("caption") or "").strip()
+            if caption:
+                captions.append(caption)
+    return captions
+
+
+async def swipe_up(rsd: Any) -> None:
+    x = 32768
+    start_y = 63500
+    end_y = 20000
+    steps = 40
+    async with touch_session(rsd) as service:
+        for index in range(steps):
+            fraction = index / (steps - 1)
+            y = round(start_y + (end_y - start_y) * fraction)
+            await service.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y)
+            await asyncio.sleep(0.04)
+        await service.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, end_y)
+
+
+async def wake_and_unlock(udid: str) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with IndigoHIDService(rsd) as service:
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
+            await asyncio.sleep(0.05)
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
+        await asyncio.sleep(1)
+
+        before = await accessibility_captions(rsd)
+        locked_before = any(caption.casefold() == "locked" for caption in before)
+        if not locked_before:
+            return {"ok": True, "lockedBefore": False, "unlocked": False}
+
+        await swipe_up(rsd)
+        await asyncio.sleep(2)
+        async with IndigoHIDService(rsd) as service:
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
+            await asyncio.sleep(0.05)
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
+        await asyncio.sleep(1)
+        after = await accessibility_captions(rsd)
+        locked_after = any(caption.casefold() == "locked" for caption in after)
+        if locked_after:
+            raise LaunchError(
+                "iPad remains locked after the automatic wake gesture. "
+                "Enter its passcode or disable idle auto-lock."
+            )
+        return {"ok": True, "lockedBefore": True, "unlocked": True}
+    finally:
+        await tunnel.aclose()
+
+
 async def press_button(udid: str, button: str) -> dict[str, Any]:
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
@@ -278,7 +339,11 @@ async def hold_awake(udid: str, timeout: int) -> dict[str, Any]:
                 timeout,
             ):
                 await asyncio.sleep(0.1)
-        return {"ok": True, "timeout": timeout}
+        return {
+            "ok": True,
+            "timeout": timeout,
+            "assertions": ["PreventUserIdleSystemSleep"],
+        }
     finally:
         await tunnel.aclose()
 
@@ -333,6 +398,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"))
     parser.add_argument("--accessibility-list", action="store_true")
     parser.add_argument("--accessibility-press")
+    parser.add_argument("--wake", action="store_true")
     parser.add_argument("--button", choices=("home", "lock"))
     parser.add_argument("--hold-awake", type=int)
     parser.add_argument("argument", nargs="*")
@@ -357,6 +423,7 @@ def main() -> int:
         and args.tap is None
         and not args.accessibility_list
         and args.accessibility_press is None
+        and not args.wake
         and args.button is None
         and args.hold_awake is None
         and not args.bundle_id
@@ -409,6 +476,8 @@ def main() -> int:
                     press_label=args.accessibility_press,
                 )
             )
+        elif args.wake:
+            result = asyncio.run(wake_and_unlock(args.udid))
         elif args.button:
             result = asyncio.run(press_button(args.udid, args.button))
         elif args.hold_awake:

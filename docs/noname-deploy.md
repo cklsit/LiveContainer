@@ -103,12 +103,14 @@ set. The runner also stops its temporary HTTP server on every exit path.
 For Actions workflows, the reusable action can download the artifact directly
 on the LAN runner with parallel byte ranges. This avoids the slow default
 artifact download path for large IPA files.
-Before relaunching LiveContainer, the runner opens LocalDevVPN and allows the
+Before relaunching LiveContainer, the runner wakes the iPad, attempts to dismiss
+the lock screen when no passcode is required, opens LocalDevVPN, and allows the
 configured tunnel to resume. SideStore's uninstall and signing operations rely
 on that connection.
 The Linux installer also starts a lightweight keep-awake process. While exactly
-one paired iPad is visible, it renews a `PreventUserIdleSystemSleep` assertion
-so normal idle sleep does not take the device off the network. This is
+one paired iPad is visible, it renews a `PreventUserIdleSystemSleep` assertion,
+wakes the display, and dismisses an auto-lock screen when no passcode is
+required so normal idle sleep does not take the device off the network. This is
 best-effort: a powered-off device, disabled Wi-Fi, or active passcode lock still
 requires user action.
 

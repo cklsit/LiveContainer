@@ -79,7 +79,7 @@ class CanonicalRequestTests(unittest.TestCase):
         payload = {
             "devices": [
                 {
-                    "identifier": "00008112-000E61640A47A01E",
+                    "identifier": "00008112-000000000000001E",
                     "name": "RemotePairing iPad 0A47A01E",
                     "deviceClass": "iPad",
                     "productType": "",
@@ -92,7 +92,7 @@ class CanonicalRequestTests(unittest.TestCase):
             deploy.parse_discovered_devices(payload),
             [
                 {
-                    "identifier": "00008112-000E61640A47A01E",
+                    "identifier": "00008112-000000000000001E",
                     "name": "RemotePairing iPad 0A47A01E",
                     "host": "192.0.2.10",
                 }
@@ -112,6 +112,31 @@ class CanonicalRequestTests(unittest.TestCase):
                 deploy.run(["command", secret], redact=(secret,))
         self.assertNotIn(secret, str(raised.exception))
         self.assertIn("<redacted>", str(raised.exception))
+
+    def test_run_with_retries_recovers_from_transient_tunnel_failure(self):
+        transient = deploy.subprocess.CompletedProcess(
+            args=["command"],
+            returncode=1,
+            stdout="",
+            stderr="No RemotePairing tunnel is available",
+        )
+        success = deploy.subprocess.CompletedProcess(
+            args=["command"],
+            returncode=0,
+            stdout='{"ok":true}',
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                deploy.subprocess,
+                "run",
+                side_effect=[transient, success],
+            ) as run_mock,
+            mock.patch.object(deploy.time, "sleep"),
+        ):
+            result = deploy.run_with_retries(["command"], attempts=2)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

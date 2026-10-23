@@ -86,6 +86,35 @@ def run(
     return result
 
 
+def run_with_retries(
+    command: list[str],
+    *,
+    attempts: int = 4,
+    delay: float = 2,
+    timeout: int = 60,
+    env: dict[str, str] | None = None,
+    redact: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return run(
+                command,
+                timeout=timeout,
+                env=env,
+                redact=redact,
+            )
+        except Exception as error:
+            last_error = error
+            if "remains locked" in str(error):
+                raise
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(min(delay * (attempt + 1), 10))
+    assert last_error is not None
+    raise last_error
+
+
 def parse_discovered_devices(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("devices"), list):
         raise DeploymentError("pymobiledevice3 discovery returned an unexpected payload")
@@ -238,19 +267,20 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             raise DeploymentError(f"Paired iPad {device_id} did not become reachable within {online_timeout:g}s")
         time.sleep(2)
 
-    run(
+    run_with_retries(
         [
             sys.executable,
             str(helper),
             "--udid",
             device_id,
-            "--button",
-            "home",
+            "--wake",
         ],
+        attempts=4,
         timeout=120,
         env=environment,
+        redact=(device_id,),
     )
-    run(
+    run_with_retries(
         [
             sys.executable,
             str(helper),
@@ -259,10 +289,12 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             "--hold-awake",
             "1800",
         ],
+        attempts=3,
         timeout=120,
         env=environment,
+        redact=(device_id,),
     )
-    run(
+    run_with_retries(
         [
             sys.executable,
             str(helper),
@@ -271,13 +303,15 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             "--bundle-id",
             LOCAL_DEV_VPN_BUNDLE_ID,
         ],
+        attempts=4,
         timeout=120,
         env=environment,
+        redact=(device_id,),
     )
     time.sleep(2)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
-    run(
+    run_with_retries(
         [
             sys.executable,
             str(helper),
@@ -288,9 +322,10 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             "--configure-token-env",
             "NONAME_DEPLOY_TOKEN",
         ],
+        attempts=3,
         timeout=120,
         env=environment,
-        redact=(token,),
+        redact=(device_id, token),
     )
 
 
