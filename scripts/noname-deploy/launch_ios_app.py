@@ -26,6 +26,7 @@ from pymobiledevice3.remote.core_device.hid_service import (
 )
 from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
 from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
+from pymobiledevice3.services.installation_proxy import InstallationProxyService
 from pymobiledevice3.services.power_assertion import PowerAssertionService
 
 
@@ -153,6 +154,33 @@ async def list_apps(udid: str) -> dict[str, Any]:
         await tunnel.aclose()
 
 
+async def app_info(udid: str) -> dict[str, Any]:
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with InstallationProxyService(rsd) as service:
+            apps = await service.lookup({
+                "ApplicationType": "User",
+                "ReturnAttributes": [
+                    "CFBundleIdentifier",
+                    "CFBundleShortVersionString",
+                    "CFBundleVersion",
+                    "Path",
+                    "Container",
+                ],
+            })
+        selected = {
+            identifier: attributes
+            for identifier, attributes in (apps or {}).items()
+            if identifier.startswith("com.kdt.livecontainer") or identifier.startswith("com.libnoname.noname")
+        }
+        return {"ok": True, "apps": selected}
+    finally:
+        await tunnel.aclose()
+
+
 async def control_device(
     udid: str,
     *,
@@ -258,6 +286,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bundle-id")
     parser.add_argument("--token-env")
     parser.add_argument("--list-apps", action="store_true")
+    parser.add_argument("--app-info", action="store_true")
     parser.add_argument("--open-url")
     parser.add_argument("--skip-install-confirmation", action="store_true")
     parser.add_argument("--screenshot", type=Path)
@@ -274,6 +303,7 @@ def main() -> int:
     args = parse_args()
     if (
         not args.list_apps
+        and not args.app_info
         and args.screenshot is None
         and args.tap is None
         and not args.accessibility_list
@@ -293,6 +323,8 @@ def main() -> int:
     try:
         if args.list_apps:
             result = asyncio.run(list_apps(args.udid))
+        elif args.app_info:
+            result = asyncio.run(app_info(args.udid))
         elif args.open_url:
             assert args.bundle_id is not None
             arguments = ["-isInstallConfirmationEnabled", "false"] if args.skip_install_confirmation else []
