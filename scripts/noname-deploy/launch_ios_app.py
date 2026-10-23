@@ -20,6 +20,28 @@ class LaunchError(RuntimeError):
     pass
 
 
+async def installed_bundle_ids(app_service: AppServiceService) -> list[str]:
+    apps = await app_service.list_apps()
+    return sorted(
+        {
+            str(app.get("bundleIdentifier"))
+            for app in apps
+            if isinstance(app, dict) and app.get("bundleIdentifier")
+        }
+    )
+
+
+def resolve_bundle_id(requested: str, installed: list[str]) -> str:
+    if requested in installed:
+        return requested
+    candidates = [identifier for identifier in installed if identifier.startswith(f"{requested}.")]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise LaunchError(f"Installed app was not found for {requested}")
+    raise LaunchError(f"Multiple installed apps match {requested}: {', '.join(candidates)}")
+
+
 async def create_mobdev2_tunnel_provider(serial: str | None, _autopair: bool, _fallback: bool):
     if not serial:
         raise LaunchError("An explicit device UDID is required")
@@ -51,12 +73,16 @@ async def launch(udid: str, bundle_id: str, arguments: list[str]) -> dict[str, A
     try:
         rsd = await tunnel.aopen()
         async with AppServiceService(rsd) as app_service:
-            result = await app_service.launch_application(
+            resolved_bundle_id = resolve_bundle_id(
                 bundle_id,
+                await installed_bundle_ids(app_service),
+            )
+            result = await app_service.launch_application(
+                resolved_bundle_id,
                 arguments=arguments,
                 kill_existing=True,
             )
-            return {"ok": True, "result": result}
+            return {"ok": True, "bundleID": resolved_bundle_id, "result": result}
     finally:
         await tunnel.aclose()
 
@@ -68,15 +94,7 @@ async def list_apps(udid: str) -> dict[str, Any]:
     try:
         rsd = await tunnel.aopen()
         async with AppServiceService(rsd) as app_service:
-            apps = await app_service.list_apps()
-            identifiers = sorted(
-                {
-                    str(app.get("bundleIdentifier"))
-                    for app in apps
-                    if isinstance(app, dict) and app.get("bundleIdentifier")
-                }
-            )
-            return {"ok": True, "bundleIdentifiers": identifiers}
+            return {"ok": True, "bundleIdentifiers": await installed_bundle_ids(app_service)}
     finally:
         await tunnel.aclose()
 
