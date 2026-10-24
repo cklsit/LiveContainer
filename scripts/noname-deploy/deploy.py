@@ -450,31 +450,11 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             raise DeploymentError(f"Paired iPad {device_id} did not become reachable within {online_timeout:g}s")
         time.sleep(2)
 
-    # The deployment itself keeps the device awake through keep_awake(), which
-    # holds its assertion for a bounded window and renews it. An inline
-    # --hold-awake call here would block this process for the whole window.
-    try:
-        launch_local_dev_vpn(device_id)
-    except DeploymentError:
-        passcode = environment.get("NONAME_IOS_PASSCODE", "").strip()
-        if not passcode:
-            raise
-        print("iPad is locked; unlocking with the configured passcode", flush=True)
-        run_with_retries(
-            [
-                sys.executable,
-                str(helper),
-                "--udid",
-                device_id,
-                "--unlock-passcode-env",
-                "NONAME_IOS_PASSCODE",
-            ],
-            attempts=3,
-            timeout=120,
-            env=environment,
-            redact=(device_id, passcode),
-        )
-        launch_local_dev_vpn(device_id)
+    # Unlock before launching anything: iOS refuses to launch an app while the
+    # device is locked (coredevice error 10002), and a Touch ID iPad needs an
+    # explicit passcode entry after the wake gesture.
+    ensure_device_unlocked(device_id)
+    launch_local_dev_vpn(device_id)
     time.sleep(10)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
@@ -922,7 +902,12 @@ def ensure_device_unlocked(device_id: str) -> None:
     )
     payload = parse_json_object(wake.stdout) or {}
     unlocked = payload.get("unlocked") is True
+    locked_before = payload.get("lockedBefore") is True
     already_awake = payload.get("lockedBefore") is False
+    print(
+        f"[recover] wake result: lockedBefore={format_flag(locked_before or None)} unlocked={format_flag(unlocked)}",
+        flush=True,
+    )
     if wake.returncode == 0 and (unlocked or already_awake):
         print(f"[recover] the iPad is awake (unlocked={format_flag(unlocked)})", flush=True)
         return
@@ -949,8 +934,9 @@ def ensure_device_unlocked(device_id: str) -> None:
         redact=redactions,
     )
     if unlock.returncode != 0:
+        detail = redact_text((unlock.stderr or "").strip(), redactions)
         raise DeploymentError(
-            "Automatic passcode unlock failed; verify NONAME_IOS_PASSCODE and the iPad lock state"
+            f"Automatic passcode unlock failed: {detail or unlock.returncode}"
         )
     print("[recover] passcode unlock finished", flush=True)
 

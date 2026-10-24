@@ -50,6 +50,87 @@ class LaunchError(RuntimeError):
 # short window instead.
 MAX_AWAKE_HOLD_SECONDS = 300
 
+# The lock screen reports localized accessibility captions ("已锁定" on a Chinese
+# iPad). Matching only the English word made the old code believe a locked device
+# was already unlocked, so the passcode path was never reached reliably.
+LOCKED_MARKERS = ("已锁定", "已锁屏", "locked")
+PASSCODE_PROMPT_MARKERS = ("使用密码", "use passcode", "输入密码", "enter passcode")
+PASSCODE_KEYPAD_MARKERS = ("已输入", "password field", "passcode field")
+
+# "使用密码" in the Touch ID alert of a Home-button iPad, measured in landscape.
+USE_PASSCODE_TAP = (29556, 33030)
+
+# Numeric keypad centers in landscape, normalized to the 0-65535 HID space.
+PASSCODE_KEY_TAPS = {
+    "1": (27260, 25630),
+    "2": (33100, 25630),
+    "3": (39060, 25630),
+    "4": (27260, 34010),
+    "5": (33100, 34010),
+    "6": (39060, 34010),
+    "7": (27260, 42470),
+    "8": (33100, 42470),
+    "9": (39060, 42470),
+    "0": (33100, 50860),
+}
+
+
+def captions_report_locked(captions: list[str]) -> bool:
+    return any(marker in caption.casefold() for caption in captions for marker in LOCKED_MARKERS)
+
+
+def captions_show_passcode_keypad(captions: list[str]) -> bool:
+    return any(marker in caption.casefold() for caption in captions for marker in PASSCODE_KEYPAD_MARKERS)
+
+
+def captions_show_passcode_prompt(captions: list[str]) -> bool:
+    return any(marker in caption.casefold() for caption in captions for marker in PASSCODE_PROMPT_MARKERS)
+
+
+async def press_home(rsd: Any) -> None:
+    async with IndigoHIDService(rsd) as service:
+        await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
+        await asyncio.sleep(0.05)
+        await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
+
+
+async def tap(rsd: Any, point: tuple[int, int]) -> None:
+    x, y = point
+    async with touch_session(rsd) as service:
+        await service.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y)
+        await asyncio.sleep(0.08)
+        await service.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y)
+
+
+async def open_passcode_keypad(rsd: Any) -> bool:
+    """Bring the numeric passcode keypad to the front on a locked iPad.
+
+    A Home-button iPad shows the Touch ID alert first ("使用密码" / "取消"); the
+    keypad only appears after tapping "使用密码". Face ID iPads show the keypad
+    right after a wake, so the loop also accepts that state directly.
+    """
+    for _ in range(4):
+        captions = await accessibility_captions(rsd)
+        if captions_show_passcode_keypad(captions):
+            return True
+        if captions_show_passcode_prompt(captions):
+            await tap(rsd, USE_PASSCODE_TAP)
+            await asyncio.sleep(1.2)
+            if captions_show_passcode_keypad(await accessibility_captions(rsd)):
+                return True
+        await press_home(rsd)
+        await asyncio.sleep(1.0)
+    return captions_show_passcode_keypad(await accessibility_captions(rsd))
+
+
+def screenshot_is_portrait(image: bytes) -> bool:
+    """Return True when a PNG screenshot is taller than it is wide."""
+    if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
+        return False
+    width = int.from_bytes(image[16:20], "big")
+    height = int.from_bytes(image[20:24], "big")
+    return height > width
+
 
 async def installed_bundle_ids(app_service: AppServiceService) -> list[str]:
     apps = await app_service.list_apps()
@@ -290,62 +371,59 @@ async def wake_and_unlock(udid: str) -> dict[str, Any]:
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
     try:
         rsd = await tunnel.aopen()
-        async with IndigoHIDService(rsd) as service:
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
-            await asyncio.sleep(0.05)
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
-        await asyncio.sleep(1)
-
-        before = await accessibility_captions(rsd)
-        locked_before = any(caption.casefold() == "locked" for caption in before)
-        if not locked_before:
-            return {"ok": True, "lockedBefore": False, "unlocked": False}
-
-        await swipe_up(rsd)
-        await asyncio.sleep(2)
-        async with IndigoHIDService(rsd) as service:
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
-            await asyncio.sleep(0.05)
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
-        await asyncio.sleep(1)
-        after = await accessibility_captions(rsd)
-        locked_after = any(caption.casefold() == "locked" for caption in after)
-        if locked_after:
-            raise LaunchError(
-                "iPad remains locked after the automatic wake gesture. "
-                "Enter its passcode or disable idle auto-lock."
-            )
-        return {"ok": True, "lockedBefore": True, "unlocked": True}
+        await press_home(rsd)
+        await asyncio.sleep(1.2)
+        captions = await accessibility_captions(rsd)
+        locked = captions_report_locked(captions)
+        # Report the state instead of raising: the caller decides whether to
+        # enter the passcode, and a LaunchError here would hide the real state.
+        return {"ok": True, "lockedBefore": locked, "unlocked": not locked}
     finally:
         await tunnel.aclose()
 
 
 async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
-    usages = passcode_usages(passcode)
+    # Validates the digits and rejects anything that is not 4-12 numbers.
+    passcode_usages(passcode)
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
     try:
         rsd = await tunnel.aopen()
-        async with IndigoHIDService(rsd) as service:
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
-            await asyncio.sleep(0.05)
-            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
-        await asyncio.sleep(1)
-        await swipe_up(rsd)
-        await asyncio.sleep(1.5)
+        await press_home(rsd)
+        await asyncio.sleep(1.0)
 
-        async with touch_session(rsd) as service:
-            keyboard_id = await service.create_keyboard_service()
-            for usage in usages:
-                await service.send_keyboard(keyboard_id, [usage])
-                await asyncio.sleep(0.08)
-                await service.send_keyboard(keyboard_id, [])
-                await asyncio.sleep(0.08)
-            await service.send_keyboard(keyboard_id, [0x28])
-            await asyncio.sleep(0.05)
-            await service.send_keyboard(keyboard_id, [])
-        await asyncio.sleep(2)
+        if not await open_passcode_keypad(rsd):
+            raise LaunchError(
+                "Could not show the passcode keypad. The iPad is probably awake "
+                "and unlocked already, or its lock screen uses an unsupported layout."
+            )
+
+        # Taps are used instead of HID keyboard events: the system passcode UI
+        # does not reliably focus a hardware keyboard, and a missed keystroke
+        # would silently turn into a wrong passcode attempt.
+        async with ScreenCaptureService(rsd) as service:
+            response = await service.capture_screenshot()
+        if screenshot_is_portrait(response["image"]):
+            raise LaunchError(
+                "The iPad is in portrait orientation; automatic passcode entry "
+                "only supports the landscape keypad layout."
+            )
+
+        for digit in passcode:
+            point = PASSCODE_KEY_TAPS.get(digit)
+            if point is None:
+                raise LaunchError(f"Unsupported passcode digit: {digit!r}")
+            await tap(rsd, point)
+            await asyncio.sleep(0.35)
+
+        await asyncio.sleep(2.5)
+        captions = await accessibility_captions(rsd)
+        if captions_report_locked(captions) or captions_show_passcode_keypad(captions):
+            raise LaunchError(
+                "Passcode entry did not unlock the iPad. Verify NONAME_IOS_PASSCODE; "
+                "repeated wrong attempts will lock the device."
+            )
         return {"ok": True, "unlocked": True}
     finally:
         await tunnel.aclose()
