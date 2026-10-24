@@ -108,8 +108,9 @@ display and continues polling while the screen is off. Set
 Deployment state machine, so the screen can stay off without losing the job:
 
 1. `keep_device_awake.py` runs as a background process for the whole deployment
-   and renews a `PreventUserIdleSystemSleep` assertion, so the iPad does not idle
-   into sleep while SideStore downloads and verifies the IPA.
+   and renews a `PreventUserIdleSystemSleep` assertion (120-second windows, at
+   least 30 seconds apart), so the iPad does not idle into sleep while SideStore
+   downloads and verifies the IPA.
 2. The display is locked only once the job message reaches the install stage
    (`installing IPA`). Before that the screen stays on, which is where the
    download and code-signing handshake need the host app awake.
@@ -182,9 +183,11 @@ production deployment action.
   the install stage, and the audio session is expected to keep the host alive
   afterwards. When iOS suspends it anyway, the liveness probe notices within
   about six seconds and the runner wakes, unlocks and restarts the host, up to
-  `NONAME_MAX_RECOVERIES` times (default 2). A suspension that happens before
-  the install stage is not recovered, because the display has not been locked
-  yet and that failure mode needs a different diagnosis.
+  `NONAME_MAX_RECOVERIES` times (default 2). Recovery is attempted once the
+  display was locked by the runner **or** `/v1/hello` answered at least once, so
+  an iOS auto-lock that happens before the install stage is recovered too.
+  A host that never answered at all is not recovered, because that points at the
+  tunnel or LocalDevVPN instead of a suspension.
 - Recovery assumes the silent-audio task survives long enough to finish an
   install that is already running. If iOS suspends the host mid-install and the
   restart re-enters the job, the build is reinstalled from scratch.

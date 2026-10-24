@@ -184,31 +184,93 @@ class InstallStageTests(unittest.TestCase):
 class ShouldRecoverTests(unittest.TestCase):
     def test_liveness_must_fail(self):
         self.assertFalse(
-            deploy.should_recover(alive=True, failures=9, locked=True, recoveries=0, max_recoveries=2)
+            deploy.should_recover(
+                alive=True,
+                failures=9,
+                locked=True,
+                ever_alive=True,
+                recoveries=0,
+                max_recoveries=2,
+            )
         )
 
     def test_failure_threshold_is_inclusive(self):
         self.assertFalse(
-            deploy.should_recover(alive=False, failures=2, locked=True, recoveries=0, max_recoveries=2)
+            deploy.should_recover(
+                alive=False,
+                failures=2,
+                locked=True,
+                ever_alive=True,
+                recoveries=0,
+                max_recoveries=2,
+            )
         )
         self.assertTrue(
-            deploy.should_recover(alive=False, failures=3, locked=True, recoveries=0, max_recoveries=2)
+            deploy.should_recover(
+                alive=False,
+                failures=3,
+                locked=True,
+                ever_alive=True,
+                recoveries=0,
+                max_recoveries=2,
+            )
         )
 
-    def test_unlocked_device_is_never_recovered(self):
+    def test_never_locked_and_never_seen_alive_is_not_recovered(self):
         self.assertFalse(
-            deploy.should_recover(alive=False, failures=5, locked=False, recoveries=0, max_recoveries=2)
+            deploy.should_recover(
+                alive=False,
+                failures=5,
+                locked=False,
+                ever_alive=False,
+                recoveries=0,
+                max_recoveries=2,
+            )
+        )
+
+    def test_alive_once_without_manual_lock_is_recovered(self):
+        # iOS auto-lock may suspend the host before the runner locks the display.
+        self.assertTrue(
+            deploy.should_recover(
+                alive=False,
+                failures=3,
+                locked=False,
+                ever_alive=True,
+                recoveries=0,
+                max_recoveries=2,
+            )
         )
 
     def test_recovery_budget_is_enforced(self):
         self.assertFalse(
-            deploy.should_recover(alive=False, failures=5, locked=True, recoveries=2, max_recoveries=2)
+            deploy.should_recover(
+                alive=False,
+                failures=5,
+                locked=True,
+                ever_alive=True,
+                recoveries=2,
+                max_recoveries=2,
+            )
         )
         self.assertFalse(
-            deploy.should_recover(alive=False, failures=5, locked=True, recoveries=0, max_recoveries=0)
+            deploy.should_recover(
+                alive=False,
+                failures=5,
+                locked=True,
+                ever_alive=True,
+                recoveries=0,
+                max_recoveries=0,
+            )
         )
         self.assertTrue(
-            deploy.should_recover(alive=False, failures=5, locked=True, recoveries=1, max_recoveries=2)
+            deploy.should_recover(
+                alive=False,
+                failures=5,
+                locked=True,
+                ever_alive=True,
+                recoveries=1,
+                max_recoveries=2,
+            )
         )
 
 

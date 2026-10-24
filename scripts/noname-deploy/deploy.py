@@ -76,7 +76,7 @@ DEFAULT_MAX_RECOVERIES = 2
 DEFAULT_ALIVE_TIMEOUT = 2.0
 RECOVERY_SERVER_TIMEOUT = 180.0
 KEEP_AWAKE_INTERVAL = 30
-KEEP_AWAKE_ASSERTION_TIMEOUT = 300
+KEEP_AWAKE_ASSERTION_TIMEOUT = 120
 INSTALL_STAGE_MARKERS = ("installing ipa", "succeeded")
 # A CFBundleVersion is only trusted as a per-build identifier when it is long
 # enough to be unique. The iOS project still hard-codes
@@ -780,18 +780,22 @@ def should_recover(
     alive: bool,
     failures: int,
     locked: bool,
+    ever_alive: bool,
     recoveries: int,
     max_recoveries: int,
 ) -> bool:
     """Decide whether a suspended SideStore host should be recovered.
 
-    Recovery is only attempted after the display was locked (that is the point
-    where iOS may suspend the app), after ``RECOVERY_FAILURE_THRESHOLD``
-    consecutive liveness failures, and while the recovery budget lasts.
+    Recovery needs ``RECOVERY_FAILURE_THRESHOLD`` consecutive liveness failures
+    and remaining recovery budget. The device must also be in a state where the
+    host may be suspended: either the display was locked by the runner, or the
+    endpoint answered at least once before. The second case matters because iOS
+    auto-lock may put the device to sleep before the runner presses the lock
+    button, which would otherwise never be recovered.
     """
     if alive:
         return False
-    if not locked:
+    if not locked and not ever_alive:
         return False
     if failures < RECOVERY_FAILURE_THRESHOLD:
         return False
@@ -1182,6 +1186,7 @@ def deploy(
                 last_phase: tuple[str, str] | None = None
                 last_alive: bool | None = None
                 helper_exit_reported = False
+                ever_alive = False
                 message = ""
 
                 while time.monotonic() < deadline:
@@ -1200,6 +1205,7 @@ def deploy(
                     hello = hello_state(host, port, alive_timeout)
                     alive = bool(hello and hello.get("ok"))
                     if alive:
+                        ever_alive = True
                         failures = 0
                         if last_alive is not True:
                             print(
@@ -1219,6 +1225,7 @@ def deploy(
                         alive=alive,
                         failures=failures,
                         locked=locked,
+                        ever_alive=ever_alive,
                         recoveries=recoveries,
                         max_recoveries=max_recoveries,
                     ):

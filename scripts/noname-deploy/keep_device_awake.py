@@ -4,7 +4,7 @@
 Each ``hold_awake()`` call holds the assertion for a bounded window and blocks
 for that window, so this loop renews it right after it returns:
 
-* ``--assertion-timeout`` is the length of one assertion window (default 300s).
+* ``--assertion-timeout`` is the length of one assertion window (default 120s).
 * ``--interval`` is only the minimum gap between two renewals (default 30s).
 
 Keep ``--interval`` well below ``--assertion-timeout`` so the device never idles
@@ -93,8 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--assertion-timeout",
         type=int,
-        default=300,
-        help=f"Length of one assertion window in seconds (capped at {MAX_AWAKE_HOLD_SECONDS})",
+        default=120,
+        help=(
+            "Length of one assertion window in seconds (capped at "
+            f"{MAX_AWAKE_HOLD_SECONDS}); keep it short so a dropped tunnel only "
+            "leaves a short gap"
+        ),
     )
     return parser.parse_args()
 
