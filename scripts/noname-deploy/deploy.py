@@ -295,6 +295,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         "--open-url",
         LOCAL_DEV_VPN_ENABLE_URL,
     ]
+    print("Enabling LocalDevVPN through localdevvpn://enable", flush=True)
     try:
         run_with_retries(
             local_dev_vpn_command,
@@ -306,6 +307,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
     except DeploymentError:
         # A locked/dimmed iPad cannot launch LocalDevVPN. Fall back to the
         # one-time focus traversal needed to inspect and dismiss the lock screen.
+        print("LocalDevVPN could not open; attempting one-time iPad wake", flush=True)
         run_with_retries(
             [
                 sys.executable,
