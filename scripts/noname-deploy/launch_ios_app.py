@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import plistlib
+import re
 import sys
 import traceback
 import urllib.parse
@@ -35,6 +36,26 @@ from pymobiledevice3.services.power_assertion import PowerAssertionService
 
 class LaunchError(RuntimeError):
     pass
+
+
+HID_DIGIT_USAGES = {
+    "1": 0x1E,
+    "2": 0x1F,
+    "3": 0x20,
+    "4": 0x21,
+    "5": 0x22,
+    "6": 0x23,
+    "7": 0x24,
+    "8": 0x25,
+    "9": 0x26,
+    "0": 0x27,
+}
+
+
+def passcode_usages(passcode: str) -> list[int]:
+    if not re.fullmatch(r"\d{4,12}", passcode):
+        raise LaunchError("The iPad passcode must contain 4 to 12 digits")
+    return [HID_DIGIT_USAGES[digit] for digit in passcode]
 
 
 async def installed_bundle_ids(app_service: AppServiceService) -> list[str]:
@@ -306,6 +327,37 @@ async def wake_and_unlock(udid: str) -> dict[str, Any]:
         await tunnel.aclose()
 
 
+async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
+    usages = passcode_usages(passcode)
+    userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
+
+    tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
+    try:
+        rsd = await tunnel.aopen()
+        async with IndigoHIDService(rsd) as service:
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_DOWN)
+            await asyncio.sleep(0.05)
+            await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
+        await asyncio.sleep(1)
+        await swipe_up(rsd)
+        await asyncio.sleep(1.5)
+
+        async with touch_session(rsd) as service:
+            keyboard_id = await service.create_keyboard_service()
+            for usage in usages:
+                await service.send_keyboard(keyboard_id, [usage])
+                await asyncio.sleep(0.08)
+                await service.send_keyboard(keyboard_id, [])
+                await asyncio.sleep(0.08)
+            await service.send_keyboard(keyboard_id, [0x28])
+            await asyncio.sleep(0.05)
+            await service.send_keyboard(keyboard_id, [])
+        await asyncio.sleep(2)
+        return {"ok": True, "unlocked": True}
+    finally:
+        await tunnel.aclose()
+
+
 async def press_button(udid: str, button: str) -> dict[str, Any]:
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
@@ -399,6 +451,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--accessibility-list", action="store_true")
     parser.add_argument("--accessibility-press")
     parser.add_argument("--wake", action="store_true")
+    parser.add_argument("--unlock-passcode-env")
     parser.add_argument("--button", choices=("home", "lock"))
     parser.add_argument("--hold-awake", type=int)
     parser.add_argument("argument", nargs="*")
@@ -445,6 +498,7 @@ def main() -> int:
         and not args.accessibility_list
         and args.accessibility_press is None
         and not args.wake
+        and args.unlock_passcode_env is None
         and args.button is None
         and args.hold_awake is None
         and not args.bundle_id
@@ -499,6 +553,9 @@ def main() -> int:
             )
         elif args.wake:
             result = asyncio.run(wake_and_unlock(args.udid))
+        elif args.unlock_passcode_env:
+            passcode = os.environ.get(args.unlock_passcode_env, "")
+            result = asyncio.run(unlock_with_passcode(args.udid, passcode))
         elif args.button:
             result = asyncio.run(press_button(args.udid, args.button))
         elif args.hold_awake:

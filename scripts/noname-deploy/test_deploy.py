@@ -9,6 +9,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 import deploy
+import launch_ios_app
 
 
 class CanonicalRequestTests(unittest.TestCase):
@@ -145,6 +146,14 @@ class CanonicalRequestTests(unittest.TestCase):
             )
         )
         self.assertFalse(deploy.is_vpn_connection_error("code signature is invalid"))
+
+    def test_passcode_digits_map_to_hid_usages(self):
+        self.assertEqual(
+            launch_ios_app.passcode_usages("123456"),
+            [0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23],
+        )
+        with self.assertRaises(launch_ios_app.LaunchError):
+            launch_ios_app.passcode_usages("12ab")
 
 
 if __name__ == "__main__":

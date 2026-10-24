@@ -98,6 +98,13 @@ Optional inputs:
 --keep-ipa                  Keep the source IPA after the run
 ```
 
+For passcode-protected devices, set `NONAME_IOS_PASSCODE` in the runner
+environment or GitHub Actions secrets. The value is passed only through the
+process environment and is never printed. SideStore starts a silent-audio
+background task before accepting the deployment job; the runner then locks the
+display and continues polling while the screen is off. Set
+`NONAME_LOCK_DURING_DEPLOY=0` only when the display must stay on.
+
 The source IPA is deleted after the deployment attempt unless `--keep-ipa` is
 set. The runner also stops its temporary HTTP server on every exit path.
 For Actions workflows, the reusable action can download the artifact directly
@@ -131,9 +138,10 @@ production deployment action.
 
 ## Current limitations
 
-- Device launch requires an existing trust relationship and an unlocked iPad.
+- Device launch requires an existing RemotePairing trust relationship.
+- A passcode-protected lock screen can be unlocked through the authenticated
+  HID keyboard when `NONAME_IOS_PASSCODE` is configured.
 - iOS may suspend background execution; keep LocalDevVPN/SideStore healthy and
-  allow the runner to relaunch SideStore through `pymobiledevice3` or
-  `devicectl`.
+  allow the silent-audio task to keep SideStore alive during installation.
 - Apple Account, certificate, pairing, or LocalDevVPN failure stops deployment.
 - Uninstalling the app deletes its local containers and data.
