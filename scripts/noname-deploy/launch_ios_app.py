@@ -9,7 +9,6 @@ import base64
 import json
 import os
 import plistlib
-import re
 import sys
 import traceback
 import urllib.parse
@@ -33,29 +32,11 @@ from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 from pymobiledevice3.services.power_assertion import PowerAssertionService
 
+from passcode import passcode_usages
+
 
 class LaunchError(RuntimeError):
     pass
-
-
-HID_DIGIT_USAGES = {
-    "1": 0x1E,
-    "2": 0x1F,
-    "3": 0x20,
-    "4": 0x21,
-    "5": 0x22,
-    "6": 0x23,
-    "7": 0x24,
-    "8": 0x25,
-    "9": 0x26,
-    "0": 0x27,
-}
-
-
-def passcode_usages(passcode: str) -> list[int]:
-    if not re.fullmatch(r"\d{4,12}", passcode):
-        raise LaunchError("The iPad passcode must contain 4 to 12 digits")
-    return [HID_DIGIT_USAGES[digit] for digit in passcode]
 
 
 async def installed_bundle_ids(app_service: AppServiceService) -> list[str]:
