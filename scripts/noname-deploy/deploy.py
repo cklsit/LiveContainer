@@ -285,6 +285,22 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         redact=(device_id,),
     )
 
+    run_with_retries(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--button",
+            "home",
+        ],
+        attempts=4,
+        timeout=120,
+        env=environment,
+        redact=(device_id,),
+    )
+    time.sleep(1)
+
     local_dev_vpn_command = [
         sys.executable,
         str(helper),
@@ -328,7 +344,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             env=environment,
             redact=(device_id,),
         )
-    time.sleep(5)
+    time.sleep(8)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
     run_with_retries(
