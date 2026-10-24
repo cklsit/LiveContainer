@@ -59,6 +59,7 @@ runs:
       env:
         NONAME_IOS_DEVICE_ID: ${{ inputs.device-id }}
         NONAME_IOS_HOST: ${{ inputs.host }}
+        NONAME_DEPLOY_PRODUCTION: "1"
       run: |
         set -euo pipefail
         ipa_path="${NONAME_DOWNLOADED_IPA:-${{ inputs.ipa-path }}}"

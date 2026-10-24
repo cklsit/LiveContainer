@@ -109,12 +109,11 @@ the tunnel without a second toggle. If SideStore reports that no `utun`
 interface exists, the runner invokes `localdevvpn://enable` once and retries the
 deployment. SideStore's uninstall and signing operations rely on that
 connection.
-The Linux installer also starts a lightweight keep-awake process. While exactly
-one paired iPad is visible, it only renews a `PreventUserIdleSystemSleep`
-assertion. It deliberately does not traverse accessibility focus in the
-background because doing so visibly selects home-screen elements. If launching
-LocalDevVPN fails because the display is off or locked, the deployment path
-falls back to a one-time wake/unlock attempt.
+The Linux installer does not start a perpetual keep-awake daemon by default.
+Set `KEEP_IPAD_AWAKE=1` only when a dedicated always-on policy is desired. The
+deployment itself renews a `PreventUserIdleSystemSleep` assertion for its
+30-minute execution window and never traverses home-screen accessibility focus
+in the background.
 
 ## Reusable action
 
@@ -127,6 +126,8 @@ falls back to a one-time wake/unlock attempt.
 
 Pin the action to a full commit SHA. Run it only on a trusted self-hosted
 runner, not on untrusted pull request code.
+Developer inspection commands are rejected when the helper runs from the
+production deployment action.
 
 ## Current limitations
 

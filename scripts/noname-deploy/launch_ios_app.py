@@ -407,6 +407,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if os.environ.get("NONAME_DEPLOY_PRODUCTION") == "1":
+        debug_only = any(
+            (
+                args.list_apps,
+                args.app_info,
+                args.container_id is not None,
+                args.container_list is not None,
+                args.container_read is not None,
+                args.screenshot is not None,
+                args.tap is not None,
+                args.accessibility_list,
+                args.accessibility_press is not None,
+                args.skip_install_confirmation,
+            )
+        )
+        if debug_only:
+            print(
+                "error: developer inspection options are disabled in the production deployment action",
+                file=sys.stderr,
+            )
+            return 2
     if args.configure_token_env:
         token = os.environ.get(args.configure_token_env, "")
         if len(token) < 32:
