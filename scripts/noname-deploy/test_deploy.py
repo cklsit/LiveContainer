@@ -228,6 +228,19 @@ class PowerStateTests(unittest.TestCase):
             self.assertFalse(deploy.probe_alive("192.0.2.10", 49321, timeout=0.1))
 
 
+class UniqueBuildVersionTests(unittest.TestCase):
+    def test_pinned_project_version_is_not_unique(self):
+        for version in ("1", "1.0", " 1 ", "2", "7", None, "", "   "):
+            self.assertFalse(deploy.is_unique_build_version(version), version)
+
+    def test_short_versions_are_not_unique(self):
+        self.assertFalse(deploy.is_unique_build_version("1234567"))
+
+    def test_per_build_version_is_unique(self):
+        for version in ("12345678", "20250101.7", "1.0.1759300000"):
+            self.assertTrue(deploy.is_unique_build_version(version), version)
+
+
 class IPABuildVersionTests(unittest.TestCase):
     @staticmethod
     def write_ipa(directory: str, version: str) -> pathlib.Path:

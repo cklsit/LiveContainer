@@ -78,6 +78,11 @@ RECOVERY_SERVER_TIMEOUT = 180.0
 KEEP_AWAKE_INTERVAL = 30
 KEEP_AWAKE_ASSERTION_TIMEOUT = 300
 INSTALL_STAGE_MARKERS = ("installing ipa", "succeeded")
+# A CFBundleVersion is only trusted as a per-build identifier when it is long
+# enough to be unique. The iOS project still hard-codes
+# CURRENT_PROJECT_VERSION = 1, so "1"/"1.0" must never satisfy a version match.
+MIN_UNIQUE_VERSION_LENGTH = 8
+NON_UNIQUE_VERSIONS = frozenset({"1", "1.0"})
 
 
 class DeploymentError(RuntimeError):
@@ -753,6 +758,23 @@ def is_install_stage(message: str) -> bool:
     return any(marker in normalized for marker in INSTALL_STAGE_MARKERS)
 
 
+def is_unique_build_version(version: str | None) -> bool:
+    """Return True when ``version`` can identify one specific build.
+
+    The iOS project currently pins ``CURRENT_PROJECT_VERSION = 1``, so the same
+    value is shared by every local build. Only long version strings are trusted
+    for the "this build is already installed" shortcut; the nightly workflow
+    injects such a per-build value. Anything else falls back to a real reinstall,
+    which is slow but always correct.
+    """
+    if not version:
+        return False
+    candidate = version.strip()
+    if candidate in NON_UNIQUE_VERSIONS:
+        return False
+    return len(candidate) >= MIN_UNIQUE_VERSION_LENGTH
+
+
 def should_recover(
     *,
     alive: bool,
@@ -1065,7 +1087,19 @@ def recover(
 
     if is_install_stage(message):
         expected = ipa_build_version(ipa_path)
-        if expected:
+        if not expected:
+            print("[recover] could not read CFBundleVersion from the IPA; skipping the install-stage shortcut", flush=True)
+        elif not is_unique_build_version(expected):
+            # Guard against a pinned CURRENT_PROJECT_VERSION: a fixed value such
+            # as "1" matches any older install, so comparing it would wrongly
+            # report success. Reinstall instead once the workflow injects a
+            # unique per-build version.
+            print(
+                f"[recover] IPA CFBundleVersion {expected!r} is not a unique build number; "
+                "skipping the install-stage shortcut and reinstalling",
+                flush=True,
+            )
+        else:
             bundle_id = str(payload.get("bundleID") or DEFAULT_BUNDLE_ID)
             installed = installed_app_version(device_id, bundle_id)
             print(
@@ -1075,8 +1109,6 @@ def recover(
             if installed == expected:
                 print("[recover] the expected build is already installed; skipping the reinstall", flush=True)
                 return None
-        else:
-            print("[recover] could not read CFBundleVersion from the IPA; skipping the install-stage shortcut", flush=True)
 
     ensure_device_unlocked(device_id)
     print("[recover] restarting LiveContainer+SideStore with a fresh deployment token", flush=True)
@@ -1190,6 +1222,11 @@ def deploy(
                         recoveries=recoveries,
                         max_recoveries=max_recoveries,
                     ):
+                        # Mark the device as woken before attempting recovery:
+                        # recovery may raise after it already pressed the wake
+                        # button, and the finally block must still try to put
+                        # the display back to sleep.
+                        session["woke"] = True
                         new_job = recover(
                             host=host,
                             port=port,
@@ -1202,7 +1239,6 @@ def deploy(
                             max_recoveries=max_recoveries,
                         )
                         recoveries += 1
-                        session["woke"] = True
                         locked = False
                         failures = 0
                         last_alive = None
