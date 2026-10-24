@@ -111,6 +111,7 @@ cp \
   "$SCRIPT_DIR/discover_ios_devices.py" \
   "$SCRIPT_DIR/keep_device_awake.py" \
   "$SCRIPT_DIR/launch_ios_app.py" \
+  "$SCRIPT_DIR/passcode.py" \
   "$SCRIPT_DIR/pair_host.py" \
   "$RUNNER_ROOT/noname-deploy/"
 

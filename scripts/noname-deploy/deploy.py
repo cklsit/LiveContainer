@@ -363,7 +363,28 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         redact=(device_id,),
     )
 
-    launch_local_dev_vpn(device_id)
+    try:
+        launch_local_dev_vpn(device_id)
+    except DeploymentError:
+        passcode = environment.get("NONAME_IOS_PASSCODE", "").strip()
+        if not passcode:
+            raise
+        print("iPad is locked; unlocking with the configured passcode", flush=True)
+        run_with_retries(
+            [
+                sys.executable,
+                str(helper),
+                "--udid",
+                device_id,
+                "--unlock-passcode-env",
+                "NONAME_IOS_PASSCODE",
+            ],
+            attempts=3,
+            timeout=120,
+            env=environment,
+            redact=(device_id, passcode),
+        )
+        launch_local_dev_vpn(device_id)
     time.sleep(10)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
@@ -616,6 +637,31 @@ def is_vpn_connection_error(message: str) -> bool:
     )
 
 
+def lock_device_display(device_id: str) -> None:
+    if os.environ.get("NONAME_LOCK_DURING_DEPLOY", "1") != "1":
+        return
+    if sys.platform == "darwin":
+        print("iOS background deployment is enabled; use the device power button to lock it", flush=True)
+        return
+
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    run_with_retries(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--button",
+            "lock",
+        ],
+        attempts=3,
+        timeout=120,
+        env=os.environ.copy(),
+        redact=(device_id, os.environ.get("NONAME_IOS_PASSCODE", "")),
+    )
+    print("Locked iPad display; SideStore continues with its silent-audio background task", flush=True)
+
+
 def deploy(
     *,
     ipa_path: Path,
@@ -674,6 +720,7 @@ def deploy(
                 raise DeploymentError("SideStore did not return a deployment job ID")
 
             print(f"Deployment job: {job_id}")
+            lock_device_display(device["identifier"])
             deadline = time.monotonic() + timeout
             job_path = f"/v1/jobs/{job_id}"
             while time.monotonic() < deadline:
