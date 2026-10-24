@@ -1,13 +1,47 @@
 #!/usr/bin/env python3
-"""Deploy an IPA through the authenticated Noname endpoint in built-in SideStore."""
+"""Deploy an IPA through the authenticated Noname endpoint in built-in SideStore.
+
+The deployment survives the iPad turning its screen off:
+
+1. ``keep_device_awake.py`` runs in the background for the whole deployment and
+   holds a ``PreventUserIdleSystemSleep`` assertion, so the device does not idle
+   into sleep while SideStore downloads and verifies the IPA.
+2. The display is locked only once the job reaches the install stage, where
+   SideStore keeps itself alive with its silent-audio background task.
+3. ``GET /v1/hello`` is polled as a liveness probe. When the endpoint stops
+   answering because iOS suspended the host, the runner wakes the iPad,
+   unlocks it, restarts LiveContainer+SideStore with a fresh token and resumes
+   the deployment with a new job.
+
+Environment variables
+---------------------
+``NONAME_LOCK_DURING_DEPLOY``
+    ``1`` (default) presses the device lock button once the deployment job
+    reaches the install stage so the screen is off while the installation
+    finishes. ``0`` keeps the display on.
+``NONAME_MAX_RECOVERIES``
+    Maximum number of automatic wake/unlock/restart cycles per deployment.
+    Defaults to ``2``.
+``NONAME_KEEP_AWAKE``
+    ``1`` (default) runs the assertion renewer in the background for the whole
+    deployment. ``0`` disables it.
+``NONAME_IOS_PASSCODE``
+    Optional lock-screen passcode. It is read from the environment only and is
+    never printed: command output and error messages redact it.
+``NONAME_ALIVE_TIMEOUT``
+    Per-request timeout in seconds for the ``/v1/hello`` liveness probe.
+    Defaults to ``2.0``.
+"""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import json
 import os
+import plistlib
 import re
 import secrets
 import select
@@ -21,6 +55,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -34,9 +69,60 @@ LOCAL_DEV_VPN_BUNDLE_ID = "com.jkcoxson.LocalDevVPN"
 LOCAL_DEV_VPN_ENABLE_URL = "localdevvpn://enable"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# Deployment state machine tuning.
+POLL_INTERVAL = 2.0
+RECOVERY_FAILURE_THRESHOLD = 3
+DEFAULT_MAX_RECOVERIES = 2
+DEFAULT_ALIVE_TIMEOUT = 2.0
+RECOVERY_SERVER_TIMEOUT = 180.0
+KEEP_AWAKE_INTERVAL = 30
+KEEP_AWAKE_ASSERTION_TIMEOUT = 300
+INSTALL_STAGE_MARKERS = ("installing ipa", "succeeded")
+
 
 class DeploymentError(RuntimeError):
     pass
+
+
+def env_flag(name: str, default: bool) -> bool:
+    """Read a boolean environment flag, accepting 0/1 and true/false spellings."""
+    raw = os.environ.get(name, "").strip().casefold()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
+def env_int(name: str, default: int) -> int:
+    """Read an integer environment value, falling back to the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"warning: {name} is not an integer ({raw!r}); using {default}", flush=True)
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    """Read a float environment value, falling back to the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"warning: {name} is not a number ({raw!r}); using {default}", flush=True)
+        return default
+
+
+def redact_text(text: str, values: tuple[str, ...]) -> str:
+    """Replace every non-empty secret in ``values`` with a placeholder."""
+    rendered = text
+    for value in values:
+        if value:
+            rendered = rendered.replace(value, "<redacted>")
+    return rendered
 
 
 def sha256_file(path: Path) -> str:
@@ -63,6 +149,21 @@ def find_dicts(value: Any, predicate):
             yield from find_dicts(child, predicate)
 
 
+def parse_json_object(text: str) -> dict[str, Any] | None:
+    """Return the last JSON object printed on ``text``, ignoring other lines."""
+    for line in reversed((text or "").splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
 def run(
     command: list[str],
     *,
@@ -73,13 +174,9 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, env=env)
     if check and result.returncode != 0:
-        display_command = " ".join(command)
-        stdout = result.stdout
-        stderr = result.stderr
-        for value in redact:
-            display_command = display_command.replace(value, "<redacted>")
-            stdout = stdout.replace(value, "<redacted>")
-            stderr = stderr.replace(value, "<redacted>")
+        display_command = redact_text(" ".join(command), redact)
+        stdout = redact_text(result.stdout, redact)
+        stderr = redact_text(result.stderr, redact)
         raise DeploymentError(
             f"Command failed ({result.returncode}): {display_command}\n"
             f"{stdout}\n{stderr}"
@@ -348,21 +445,9 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             raise DeploymentError(f"Paired iPad {device_id} did not become reachable within {online_timeout:g}s")
         time.sleep(2)
 
-    run_with_retries(
-        [
-            sys.executable,
-            str(helper),
-            "--udid",
-            device_id,
-            "--hold-awake",
-            "1800",
-        ],
-        attempts=3,
-        timeout=120,
-        env=environment,
-        redact=(device_id,),
-    )
-
+    # The deployment itself keeps the device awake through keep_awake(), which
+    # holds its assertion for a bounded window and renews it. An inline
+    # --hold-awake call here would block this process for the whole window.
     try:
         launch_local_dev_vpn(device_id)
     except DeploymentError:
@@ -406,13 +491,17 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
     )
 
 
-def terminate_process(process: subprocess.Popen[str]) -> None:
+def terminate_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is None:
         process.terminate()
         try:
             process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             process.kill()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                return
 
 
 def read_process_lines_until(process: subprocess.Popen[str], deadline: float):
@@ -637,11 +726,239 @@ def is_vpn_connection_error(message: str) -> bool:
     )
 
 
-def lock_device_display(device_id: str) -> None:
-    if os.environ.get("NONAME_LOCK_DURING_DEPLOY", "1") != "1":
+def format_flag(value: Any) -> str:
+    """Render an optional boolean telemetry field for the log."""
+    if value is None:
+        return "unknown"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def describe_power_state(hello: dict[str, Any]) -> str:
+    """Render the optional background/audio flags of a ``/v1/hello`` reply.
+
+    Older SideStore builds do not report these fields; they are logged as
+    ``unknown`` instead of failing the deployment.
+    """
+    return (
+        f"backgroundActive={format_flag(hello.get('backgroundActive'))} "
+        f"audioActive={format_flag(hello.get('audioActive'))}"
+    )
+
+
+def is_install_stage(message: str) -> bool:
+    """Return True once the job message reached the install or success stage."""
+    normalized = (message or "").casefold()
+    return any(marker in normalized for marker in INSTALL_STAGE_MARKERS)
+
+
+def should_recover(
+    *,
+    alive: bool,
+    failures: int,
+    locked: bool,
+    recoveries: int,
+    max_recoveries: int,
+) -> bool:
+    """Decide whether a suspended SideStore host should be recovered.
+
+    Recovery is only attempted after the display was locked (that is the point
+    where iOS may suspend the app), after ``RECOVERY_FAILURE_THRESHOLD``
+    consecutive liveness failures, and while the recovery budget lasts.
+    """
+    if alive:
+        return False
+    if not locked:
+        return False
+    if failures < RECOVERY_FAILURE_THRESHOLD:
+        return False
+    return recoveries < max_recoveries
+
+
+def hello_state(
+    host: str,
+    port: int,
+    timeout: float = DEFAULT_ALIVE_TIMEOUT,
+) -> dict[str, Any] | None:
+    """Return the parsed ``/v1/hello`` payload, or None when it is unreachable."""
+    request = urllib.request.Request(f"http://{host}:{port}/v1/hello", method="GET")
+    try:
+        with LOCAL_OPENER.open(request, timeout=timeout) as response:
+            if not 200 <= int(response.status) < 300:
+                return None
+            return parse_json_object(response.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def probe_alive(host: str, port: int, timeout: float = DEFAULT_ALIVE_TIMEOUT) -> bool:
+    """Report whether SideStore answers ``/v1/hello`` with ``ok``."""
+    state = hello_state(host, port, timeout)
+    return bool(state and state.get("ok"))
+
+
+def ipa_build_version(ipa_path: Path) -> str | None:
+    """Read ``CFBundleVersion`` from ``Payload/*.app/Info.plist`` inside an IPA."""
+    try:
+        with zipfile.ZipFile(ipa_path) as archive:
+            for name in archive.namelist():
+                parts = name.split("/")
+                if len(parts) != 3:
+                    continue
+                if parts[0] != "Payload" or parts[2] != "Info.plist":
+                    continue
+                if not parts[1].endswith(".app"):
+                    continue
+                with archive.open(name) as handle:
+                    info = plistlib.load(handle)
+                if not isinstance(info, dict):
+                    continue
+                version = info.get("CFBundleVersion")
+                if isinstance(version, str) and version.strip():
+                    return version.strip()
+                return None
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException):
+        return None
+    return None
+
+
+def installed_app_version(device_id: str, bundle_id: str) -> str | None:
+    """Read the installed ``CFBundleVersion`` for ``bundle_id`` through the helper."""
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    environment = os.environ.copy()
+    passcode = environment.get("NONAME_IOS_PASSCODE", "").strip()
+    result = run(
+        [sys.executable, str(helper), "--udid", device_id, "--app-info"],
+        timeout=120,
+        check=False,
+        env=environment,
+        redact=(device_id, passcode),
+    )
+    if result.returncode != 0:
+        detail = redact_text((result.stderr or "").strip(), (device_id, passcode))
+        print(f"[recover] could not read installed app info: {detail or result.returncode}", flush=True)
+        return None
+    payload = parse_json_object(result.stdout)
+    if payload is None:
+        return None
+    apps = payload.get("apps")
+    if not isinstance(apps, dict):
+        return None
+    candidates = [bundle_id]
+    candidates.extend(key for key in apps if str(key).startswith(f"{bundle_id}."))
+    for key in candidates:
+        attributes = apps.get(key)
+        if not isinstance(attributes, dict):
+            continue
+        version = attributes.get("CFBundleVersion")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    return None
+
+
+def ensure_device_unlocked(device_id: str) -> None:
+    """Wake the iPad and unlock it, using ``NONAME_IOS_PASSCODE`` when needed."""
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    environment = os.environ.copy()
+    passcode = environment.get("NONAME_IOS_PASSCODE", "").strip()
+    redactions = (device_id, passcode)
+
+    print("[recover] waking the iPad", flush=True)
+    wake = run(
+        [sys.executable, str(helper), "--udid", device_id, "--wake"],
+        timeout=180,
+        check=False,
+        env=environment,
+        redact=redactions,
+    )
+    payload = parse_json_object(wake.stdout) or {}
+    unlocked = payload.get("unlocked") is True
+    already_awake = payload.get("lockedBefore") is False
+    if wake.returncode == 0 and (unlocked or already_awake):
+        print(f"[recover] the iPad is awake (unlocked={format_flag(unlocked)})", flush=True)
+        return
+
+    if not passcode:
+        raise DeploymentError(
+            "The iPad is locked and NONAME_IOS_PASSCODE is not configured. "
+            "Enter the passcode on the device or disable idle auto-lock."
+        )
+
+    print("[recover] the iPad is locked; unlocking with the configured passcode", flush=True)
+    unlock = run(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--unlock-passcode-env",
+            "NONAME_IOS_PASSCODE",
+        ],
+        timeout=180,
+        check=False,
+        env=environment,
+        redact=redactions,
+    )
+    if unlock.returncode != 0:
+        raise DeploymentError(
+            "Automatic passcode unlock failed; verify NONAME_IOS_PASSCODE and the iPad lock state"
+        )
+    print("[recover] passcode unlock finished", flush=True)
+
+
+@contextlib.contextmanager
+def keep_awake(device_id: str):
+    """Run the assertion renewer in the background for the whole deployment.
+
+    Yields the ``Popen`` handle (or None when the helper is disabled) so the
+    caller can notice an early exit. The helper holds a
+    ``PreventUserIdleSystemSleep`` assertion for a bounded window and renews it,
+    which keeps the runner responsive instead of blocking on one long hold.
+    """
+    if not env_flag("NONAME_KEEP_AWAKE", True):
+        print("[awake] keep-awake helper disabled by NONAME_KEEP_AWAKE", flush=True)
+        yield None
         return
     if sys.platform == "darwin":
-        print("iOS background deployment is enabled; use the device power button to lock it", flush=True)
+        print("[awake] macOS runners keep the device awake through devicectl", flush=True)
+        yield None
+        return
+
+    helper = Path(__file__).with_name("keep_device_awake.py")
+    command = [
+        sys.executable,
+        str(helper),
+        "--interval",
+        str(KEEP_AWAKE_INTERVAL),
+        "--assertion-timeout",
+        str(KEEP_AWAKE_ASSERTION_TIMEOUT),
+    ]
+    process: subprocess.Popen[Any] | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=os.environ.copy(),
+        )
+        print(
+            f"[awake] helper started (pid {process.pid}) holding "
+            f"{KEEP_AWAKE_ASSERTION_TIMEOUT}s assertions every {KEEP_AWAKE_INTERVAL}s for {device_id}",
+            flush=True,
+        )
+        yield process
+    finally:
+        if process is not None:
+            terminate_process(process)
+            print("[awake] helper stopped", flush=True)
+
+
+def lock_device_display(device_id: str) -> None:
+    if not env_flag("NONAME_LOCK_DURING_DEPLOY", True):
+        return
+    if sys.platform == "darwin":
+        print("[phase] iOS background deployment is enabled; use the device power button to lock it", flush=True)
         return
 
     helper = Path(__file__).with_name("launch_ios_app.py")
@@ -659,7 +976,114 @@ def lock_device_display(device_id: str) -> None:
         env=os.environ.copy(),
         redact=(device_id, os.environ.get("NONAME_IOS_PASSCODE", "")),
     )
-    print("Locked iPad display; SideStore continues with its silent-audio background task", flush=True)
+    print("[phase] locked the iPad display; SideStore continues with its silent-audio background task", flush=True)
+
+
+def restore_display_off(device_id: str) -> None:
+    """Press the lock button once so the device returns to its screen-off state."""
+    if not env_flag("NONAME_LOCK_DURING_DEPLOY", True):
+        return
+    if sys.platform == "darwin":
+        print("[phase] press the device power button to lock it again", flush=True)
+        return
+
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    passcode = os.environ.get("NONAME_IOS_PASSCODE", "").strip()
+    result = run(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--button",
+            "lock",
+        ],
+        timeout=120,
+        check=False,
+        env=os.environ.copy(),
+        redact=(device_id, passcode),
+    )
+    if result.returncode == 0:
+        print("[phase] restored the screen-off state with one lock-button press", flush=True)
+    else:
+        detail = redact_text((result.stderr or "").strip(), (device_id, passcode))
+        print(f"[phase] could not restore the screen-off state: {detail or result.returncode}", flush=True)
+
+
+def submit_job(
+    host: str,
+    port: int,
+    token: str,
+    payload: dict[str, Any],
+    *,
+    label: str,
+) -> str:
+    """POST ``/v1/deploy`` and return the accepted job ID."""
+    status, response = signed_request(
+        host,
+        port,
+        token,
+        payload,
+        method="POST",
+        path="/v1/deploy",
+    )
+    if status != 202 or not response.get("ok"):
+        raise DeploymentError(f"Deployment request was rejected: {response}")
+    job_id = response.get("jobID")
+    if not job_id:
+        raise DeploymentError("SideStore did not return a deployment job ID")
+    print(f"[phase] {label} job accepted: {job_id}", flush=True)
+    return str(job_id)
+
+
+def recover(
+    *,
+    host: str,
+    port: int,
+    token: str,
+    device_id: str,
+    payload: dict[str, Any],
+    ipa_path: Path,
+    message: str,
+    recoveries: int,
+    max_recoveries: int,
+) -> str | None:
+    """Wake, unlock and restart the SideStore host, then resume the deployment.
+
+    Returns the new job ID, or None when the interrupted job had already
+    installed the expected build and no reinstall is necessary.
+    """
+    if recoveries >= max_recoveries:
+        raise DeploymentError(
+            f"SideStore stopped answering and the recovery budget of {max_recoveries} is exhausted"
+        )
+    print(
+        f"[recover] SideStore stopped answering after {RECOVERY_FAILURE_THRESHOLD} liveness failures; "
+        f"starting recovery {recoveries + 1}/{max_recoveries}",
+        flush=True,
+    )
+
+    if is_install_stage(message):
+        expected = ipa_build_version(ipa_path)
+        if expected:
+            bundle_id = str(payload.get("bundleID") or DEFAULT_BUNDLE_ID)
+            installed = installed_app_version(device_id, bundle_id)
+            print(
+                f"[recover] install-stage version check: installed={installed or 'unknown'} expected={expected}",
+                flush=True,
+            )
+            if installed == expected:
+                print("[recover] the expected build is already installed; skipping the reinstall", flush=True)
+                return None
+        else:
+            print("[recover] could not read CFBundleVersion from the IPA; skipping the install-stage shortcut", flush=True)
+
+    ensure_device_unlocked(device_id)
+    print("[recover] restarting LiveContainer+SideStore with a fresh deployment token", flush=True)
+    launch_configured_side_store(device_id, token)
+    wait_for_server(host, port, RECOVERY_SERVER_TIMEOUT)
+    job_id = submit_job(host, port, token, payload, label="recovery")
+    return job_id
 
 
 def deploy(
@@ -675,93 +1099,208 @@ def deploy(
     if bundle_id != DEFAULT_BUNDLE_ID:
         raise DeploymentError(f"Unsupported bundle ID: {bundle_id}")
 
+    max_recoveries = max(0, env_int("NONAME_MAX_RECOVERIES", DEFAULT_MAX_RECOVERIES))
+    alive_timeout = env_float("NONAME_ALIVE_TIMEOUT", DEFAULT_ALIVE_TIMEOUT)
+    lock_during_deploy = env_flag("NONAME_LOCK_DURING_DEPLOY", True)
+    print(
+        f"[phase] deploy start: ipa={ipa_path.name} timeout={timeout:g}s "
+        f"maxRecoveries={max_recoveries} lockDuringDeploy={format_flag(lock_during_deploy)}",
+        flush=True,
+    )
+
     device = select_device(device_id)
     token = secrets.token_urlsafe(32)
-    launch_configured_side_store(device["identifier"], token)
+    session: dict[str, bool] = {"woke": False}
 
-    host, port = (
-        (host_override, DEPLOY_PORT)
-        if host_override
-        else discover_bonjour_service(timeout=min(timeout, 30))
-    )
-    wait_for_server(host, port, timeout=min(timeout, 30))
+    with keep_awake(device["identifier"]) as awake_process:
+        launch_configured_side_store(device["identifier"], token)
 
-    digest = sha256_file(ipa_path)
-    served_path = f"/ipa/{secrets.token_urlsafe(24)}.ipa"
-    runner_ip = local_address_for(host)
-    IPARequestHandler.ipa_path = ipa_path
-    IPARequestHandler.expected_path = served_path
-    server = ThreadingHTTPServer((runner_ip, 0), IPARequestHandler)
-    server.daemon_threads = True
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
+        host, port = (
+            (host_override, DEPLOY_PORT)
+            if host_override
+            else discover_bonjour_service(timeout=min(timeout, 30))
+        )
+        wait_for_server(host, port, timeout=min(timeout, 30))
 
-    try:
-        ipa_url = f"http://{runner_ip}:{server.server_address[1]}{served_path}"
-        payload = {
-            "bundleID": bundle_id,
-            "ipaURL": ipa_url,
-            "sha256": digest,
-        }
+        digest = sha256_file(ipa_path)
+        served_path = f"/ipa/{secrets.token_urlsafe(24)}.ipa"
+        runner_ip = local_address_for(host)
+        IPARequestHandler.ipa_path = ipa_path
+        IPARequestHandler.expected_path = served_path
+        server = ThreadingHTTPServer((runner_ip, 0), IPARequestHandler)
+        server.daemon_threads = True
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
 
-        def run_job() -> None:
-            status, response = signed_request(
-                host,
-                port,
-                token,
-                payload,
-                method="POST",
-                path="/v1/deploy",
-            )
-            if status != 202 or not response.get("ok"):
-                raise DeploymentError(f"Deployment request was rejected: {response}")
-            job_id = response.get("jobID")
-            if not job_id:
-                raise DeploymentError("SideStore did not return a deployment job ID")
+        deadline = time.monotonic() + timeout
 
-            print(f"Deployment job: {job_id}")
-            lock_device_display(device["identifier"])
-            deadline = time.monotonic() + timeout
-            job_path = f"/v1/jobs/{job_id}"
-            while time.monotonic() < deadline:
-                status, job = signed_request(
-                    host,
-                    port,
-                    token,
-                    {},
-                    method="GET",
-                    path=job_path,
-                    body=b"",
+        try:
+            ipa_url = f"http://{runner_ip}:{server.server_address[1]}{served_path}"
+            payload: dict[str, Any] = {
+                "bundleID": bundle_id,
+                "ipaURL": ipa_url,
+                "sha256": digest,
+            }
+
+            def run_job() -> None:
+                job_id = submit_job(host, port, token, payload, label="deployment")
+                locked = False
+                failures = 0
+                recoveries = 0
+                last_phase: tuple[str, str] | None = None
+                last_alive: bool | None = None
+                helper_exit_reported = False
+                message = ""
+
+                while time.monotonic() < deadline:
+                    if (
+                        not helper_exit_reported
+                        and awake_process is not None
+                        and awake_process.poll() is not None
+                    ):
+                        print(
+                            f"[awake] helper exited with code {awake_process.returncode}; "
+                            "continuing without the awake assertion",
+                            flush=True,
+                        )
+                        helper_exit_reported = True
+
+                    hello = hello_state(host, port, alive_timeout)
+                    alive = bool(hello and hello.get("ok"))
+                    if alive:
+                        failures = 0
+                        if last_alive is not True:
+                            print(
+                                f"[alive] SideStore answered /v1/hello ({describe_power_state(hello or {})})",
+                                flush=True,
+                            )
+                    else:
+                        failures += 1
+                        if failures <= RECOVERY_FAILURE_THRESHOLD or failures % 15 == 0:
+                            print(
+                                f"[alive] no /v1/hello response ({failures} consecutive failures)",
+                                flush=True,
+                            )
+                    last_alive = alive
+
+                    if should_recover(
+                        alive=alive,
+                        failures=failures,
+                        locked=locked,
+                        recoveries=recoveries,
+                        max_recoveries=max_recoveries,
+                    ):
+                        new_job = recover(
+                            host=host,
+                            port=port,
+                            token=token,
+                            device_id=device["identifier"],
+                            payload=payload,
+                            ipa_path=ipa_path,
+                            message=message,
+                            recoveries=recoveries,
+                            max_recoveries=max_recoveries,
+                        )
+                        recoveries += 1
+                        session["woke"] = True
+                        locked = False
+                        failures = 0
+                        last_alive = None
+                        last_phase = None
+                        if new_job is None:
+                            print(
+                                f"[phase] deployment already completed before the suspension "
+                                f"({recoveries} recovery attempt(s))",
+                                flush=True,
+                            )
+                            return
+                        job_id = new_job
+                        continue
+
+                    if not alive:
+                        time.sleep(POLL_INTERVAL)
+                        continue
+
+                    job_path = f"/v1/jobs/{job_id}"
+                    try:
+                        status, job = signed_request(
+                            host,
+                            port,
+                            token,
+                            {},
+                            method="GET",
+                            path=job_path,
+                            body=b"",
+                        )
+                    except Exception as error:
+                        failures += 1
+                        print(f"[alive] job status request failed ({failures}): {error}", flush=True)
+                        time.sleep(POLL_INTERVAL)
+                        continue
+                    if status != 200 or not job.get("ok"):
+                        failures += 1
+                        print(f"[alive] job status rejected ({failures}): {job}", flush=True)
+                        time.sleep(POLL_INTERVAL)
+                        continue
+
+                    status_text = str(job.get("status") or "")
+                    message = str(job.get("message") or "")
+                    if (status_text, message) != last_phase:
+                        print(f"[{status_text}] {message}", flush=True)
+                        last_phase = (status_text, message)
+
+                    if status_text == "succeeded":
+                        print(
+                            f"[phase] deployment succeeded with {recoveries} recovery attempt(s)",
+                            flush=True,
+                        )
+                        return
+                    if status_text == "failed":
+                        raise DeploymentError(message or "Deployment failed")
+
+                    if lock_during_deploy and not locked and is_install_stage(message):
+                        print(
+                            f"[phase] install stage reached ({message or status_text}); locking the display",
+                            flush=True,
+                        )
+                        lock_device_display(device["identifier"])
+                        locked = True
+
+                    time.sleep(POLL_INTERVAL)
+
+                last_status = last_phase[0] if last_phase else "unknown"
+                last_message = last_phase[1] if last_phase else "none"
+                raise DeploymentError(
+                    f"Timed out after {timeout:g}s waiting for the SideStore deployment "
+                    f"(last status={last_status}, message={last_message}, "
+                    f"recoveries={recoveries}, liveness failures={failures})"
                 )
-                if status != 200 or not job.get("ok"):
-                    raise DeploymentError(f"Deployment status request was rejected: {job}")
-                status_text = job.get("status")
-                message = job.get("message") or ""
-                print(f"[{status_text}] {message}", flush=True)
-                if status_text == "succeeded":
-                    return
-                if status_text == "failed":
-                    raise DeploymentError(message or "Deployment failed")
-                time.sleep(2)
-            raise DeploymentError("Timed out waiting for SideStore deployment")
 
-        for attempt in range(2):
-            try:
-                run_job()
-                return
-            except DeploymentError as error:
-                if attempt == 0 and is_vpn_connection_error(str(error)):
-                    enable_local_dev_vpn(device["identifier"])
-                    time.sleep(10)
-                    continue
-                raise
-    finally:
-        server.shutdown()
-        server.server_close()
+            for attempt in range(2):
+                try:
+                    run_job()
+                    return
+                except DeploymentError as error:
+                    if attempt == 0 and is_vpn_connection_error(str(error)):
+                        enable_local_dev_vpn(device["identifier"])
+                        time.sleep(10)
+                        continue
+                    raise
+        finally:
+            server.shutdown()
+            server.server_close()
+            if session["woke"]:
+                try:
+                    restore_display_off(device["identifier"])
+                except Exception as error:
+                    print(f"[phase] failed to restore the screen-off state: {error}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--ipa", required=True, type=Path)
     parser.add_argument("--bundle-id", default=DEFAULT_BUNDLE_ID)
     parser.add_argument("--device-id", default=os.environ.get("NONAME_IOS_DEVICE_ID"))

@@ -105,6 +105,42 @@ background task before accepting the deployment job; the runner then locks the
 display and continues polling while the screen is off. Set
 `NONAME_LOCK_DURING_DEPLOY=0` only when the display must stay on.
 
+Deployment state machine, so the screen can stay off without losing the job:
+
+1. `keep_device_awake.py` runs as a background process for the whole deployment
+   and renews a `PreventUserIdleSystemSleep` assertion, so the iPad does not idle
+   into sleep while SideStore downloads and verifies the IPA.
+2. The display is locked only once the job message reaches the install stage
+   (`installing IPA`). Before that the screen stays on, which is where the
+   download and code-signing handshake need the host app awake.
+3. `GET /v1/hello` (no authentication) is polled every two seconds as a
+   liveness probe. While it answers, the job is polled normally.
+4. When it stops answering for three consecutive probes after the lock, the
+   runner wakes the iPad, unlocks it (passcode from `NONAME_IOS_PASSCODE`),
+   relaunches LiveContainer+SideStore with a fresh token, waits for `/v1/hello`
+   again and resubmits the deployment as a new job.
+5. If the interrupted job had already reached the install stage, the runner
+   compares the installed `CFBundleVersion` with the IPA's before reinstalling.
+   An identical build means the install finished just before the suspension and
+   no work is redone.
+6. When a recovery happened, one more lock-button press restores the screen-off
+   state after the run.
+
+Environment variables:
+
+```text
+NONAME_LOCK_DURING_DEPLOY  1 (default) locks the display at the install stage
+NONAME_MAX_RECOVERIES      Automatic wake/unlock/restart cycles; default 2
+NONAME_KEEP_AWAKE          1 (default) runs the assertion renewer in the background
+NONAME_IOS_PASSCODE        Lock-screen passcode, environment only, never printed
+NONAME_ALIVE_TIMEOUT       /v1/hello probe timeout in seconds; default 2.0
+```
+
+Newer SideStore builds also report `backgroundActive` and `audioActive` in
+`/v1/hello`. The runner logs both as `[alive] SideStore answered /v1/hello
+(backgroundActive=... audioActive=...)`. Older builds omit the fields; they are
+then logged as `unknown` and no error is raised.
+
 The source IPA is deleted after the deployment attempt unless `--keep-ipa` is
 set. The runner also stops its temporary HTTP server on every exit path.
 For Actions workflows, the reusable action can download the artifact directly
@@ -118,9 +154,8 @@ deployment. SideStore's uninstall and signing operations rely on that
 connection.
 The Linux installer does not start a perpetual keep-awake daemon by default.
 Set `KEEP_IPAD_AWAKE=1` only when a dedicated always-on policy is desired. The
-deployment itself renews a `PreventUserIdleSystemSleep` assertion for its
-30-minute execution window and never traverses home-screen accessibility focus
-in the background.
+deployment itself starts and stops `keep_device_awake.py` for its own duration
+and never traverses home-screen accessibility focus in the background.
 
 ## Reusable action
 
@@ -140,8 +175,18 @@ production deployment action.
 
 - Device launch requires an existing RemotePairing trust relationship.
 - A passcode-protected lock screen can be unlocked through the authenticated
-  HID keyboard when `NONAME_IOS_PASSCODE` is configured.
-- iOS may suspend background execution; keep LocalDevVPN/SideStore healthy and
-  allow the silent-audio task to keep SideStore alive during installation.
+  HID keyboard when `NONAME_IOS_PASSCODE` is configured. Without a passcode the
+  recovery path stops with an explicit error instead of retrying blindly.
+- iOS can still suspend the built-in SideStore host. Silent-audio keep-alive is
+  the first line of defence: the assertion renewer keeps the device awake until
+  the install stage, and the audio session is expected to keep the host alive
+  afterwards. When iOS suspends it anyway, the liveness probe notices within
+  about six seconds and the runner wakes, unlocks and restarts the host, up to
+  `NONAME_MAX_RECOVERIES` times (default 2). A suspension that happens before
+  the install stage is not recovered, because the display has not been locked
+  yet and that failure mode needs a different diagnosis.
+- Recovery assumes the silent-audio task survives long enough to finish an
+  install that is already running. If iOS suspends the host mid-install and the
+  restart re-enters the job, the build is reinstalled from scratch.
 - Apple Account, certificate, pairing, or LocalDevVPN failure stops deployment.
 - Uninstalling the app deletes its local containers and data.

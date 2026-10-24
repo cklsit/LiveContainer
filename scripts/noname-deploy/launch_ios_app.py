@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Launch a paired iPad app through an in-process RemoteXPC tunnel."""
+"""Launch a paired iPad app through an in-process RemoteXPC tunnel.
+
+``--hold-awake SECONDS`` holds a ``PreventUserIdleSystemSleep`` power assertion
+for the whole window and therefore blocks the process for SECONDS before it
+prints its JSON result. Wrap it in a background process when the caller needs to
+keep working; ``keep_device_awake.py`` renews the assertion that way.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +43,12 @@ from passcode import passcode_usages
 
 class LaunchError(RuntimeError):
     pass
+
+
+# Upper bound for one power-assertion window. Longer windows leave the RemoteXPC
+# tunnel idle for too long, and callers that need continuous coverage renew a
+# short window instead.
+MAX_AWAKE_HOLD_SECONDS = 300
 
 
 async def installed_bundle_ids(app_service: AppServiceService) -> list[str]:
@@ -360,8 +372,17 @@ async def press_button(udid: str, button: str) -> dict[str, Any]:
 
 
 async def hold_awake(udid: str, timeout: int) -> dict[str, Any]:
+    """Hold a PreventUserIdleSystemSleep assertion for the whole ``timeout``.
+
+    The assertion is created before the sleep and released only when the
+    surrounding context managers exit, so the device stays awake for the full
+    window. This coroutine blocks for ``timeout`` seconds by design: a caller
+    that should stay responsive runs it as a separate process, and a caller that
+    wants continuous coverage passes a short window and renews it right away.
+    """
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
+    held_seconds = min(MAX_AWAKE_HOLD_SECONDS, max(1, int(timeout)))
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
     try:
         rsd = await tunnel.aopen()
@@ -369,12 +390,15 @@ async def hold_awake(udid: str, timeout: int) -> dict[str, Any]:
             async with service.create_power_assertion(
                 "PreventUserIdleSystemSleep",
                 "Noname Deployment",
-                timeout,
+                held_seconds,
             ):
-                await asyncio.sleep(0.1)
+                # Sleep inside the assertion context so the assertion stays
+                # active; returning earlier releases it immediately and the
+                # device idles back to sleep.
+                await asyncio.sleep(held_seconds)
         return {
             "ok": True,
-            "timeout": timeout,
+            "timeout": held_seconds,
             "assertions": ["PreventUserIdleSystemSleep"],
         }
     finally:
@@ -434,7 +458,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wake", action="store_true")
     parser.add_argument("--unlock-passcode-env")
     parser.add_argument("--button", choices=("home", "lock"))
-    parser.add_argument("--hold-awake", type=int)
+    parser.add_argument(
+        "--hold-awake",
+        type=int,
+        metavar="SECONDS",
+        help="Hold a PreventUserIdleSystemSleep assertion and block for SECONDS (max 300 is recommended)",
+    )
     parser.add_argument("argument", nargs="*")
     return parser.parse_args()
 
@@ -442,10 +471,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if os.environ.get("NONAME_DEPLOY_PRODUCTION") == "1":
+        # --app-info stays available in production: the deployment recovery path
+        # needs the installed CFBundleVersion to decide whether an interrupted
+        # job already installed the expected build. It only reads metadata.
         debug_only = any(
             (
                 args.list_apps,
-                args.app_info,
                 args.container_id is not None,
                 args.container_list is not None,
                 args.container_read is not None,
