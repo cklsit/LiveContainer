@@ -357,5 +357,17 @@ class IPABuildVersionTests(unittest.TestCase):
             self.assertIsNone(deploy.ipa_build_version(garbage))
 
 
+class ScreenRestoreTests(unittest.TestCase):
+    def test_screen_off_before_and_on_after_is_restored(self):
+        self.assertTrue(deploy.should_restore_screen_off(True, False))
+
+    def test_already_locked_is_left_alone(self):
+        self.assertFalse(deploy.should_restore_screen_off(True, True))
+
+    def test_screen_on_before_is_never_forced_off(self):
+        self.assertFalse(deploy.should_restore_screen_off(False, False))
+        self.assertFalse(deploy.should_restore_screen_off(False, True))
+
+
 if __name__ == "__main__":
     unittest.main()

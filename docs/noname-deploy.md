@@ -129,8 +129,11 @@ Deployment state machine, so the screen can stay off without losing the job:
    compares the installed `CFBundleVersion` with the IPA's before reinstalling.
    An identical build means the install finished just before the suspension and
    the run is treated as complete.
-7. When a recovery happened, one more lock-button press restores the screen-off
-   state after the run.
+7. The runner records whether the iPad was locked (screen off) before it woke
+   it. If it was, and the display is not locked when the run finishes (for
+   example the job ended before the install stage, or a recovery woke it last),
+   one lock-button press restores the screen-off state. An already locked device
+   is left alone, because a lock-button press would wake it instead.
 
 Environment variables:
 

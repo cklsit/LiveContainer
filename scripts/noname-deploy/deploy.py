@@ -396,7 +396,8 @@ def enable_local_dev_vpn(device_id: str) -> None:
     )
 
 
-def launch_configured_side_store(device_id: str, token: str) -> None:
+def launch_configured_side_store(device_id: str, token: str) -> bool:
+    """Launch and configure SideStore, returning whether the screen was off."""
     if sys.platform == "darwin":
         launch_local_dev_vpn(device_id)
         time.sleep(10)
@@ -419,7 +420,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             timeout=60,
             redact=(token,),
         )
-        return
+        return False
 
     environment = os.environ.copy()
     helper = Path(__file__).with_name("launch_ios_app.py")
@@ -453,7 +454,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
     # Unlock before launching anything: iOS refuses to launch an app while the
     # device is locked (coredevice error 10002), and a Touch ID iPad needs an
     # explicit passcode entry after the wake gesture.
-    ensure_device_unlocked(device_id)
+    locked_before = ensure_device_unlocked(device_id)
     launch_local_dev_vpn(device_id)
     time.sleep(10)
 
@@ -474,6 +475,7 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         env=environment,
         redact=(device_id, token),
     )
+    return locked_before
 
 
 def terminate_process(process: subprocess.Popen[Any]) -> None:
@@ -885,8 +887,13 @@ def installed_app_version(device_id: str, bundle_id: str) -> str | None:
     return None
 
 
-def ensure_device_unlocked(device_id: str) -> None:
-    """Wake the iPad and unlock it, using ``NONAME_IOS_PASSCODE`` when needed."""
+def ensure_device_unlocked(device_id: str) -> bool:
+    """Wake the iPad and unlock it, using ``NONAME_IOS_PASSCODE`` when needed.
+
+    Returns True when the device was locked before the wake, which means its
+    screen was off. The caller uses that to restore the screen-off state once
+    the deployment finishes.
+    """
     helper = Path(__file__).with_name("launch_ios_app.py")
     environment = os.environ.copy()
     passcode = environment.get("NONAME_IOS_PASSCODE", "").strip()
@@ -910,7 +917,7 @@ def ensure_device_unlocked(device_id: str) -> None:
     )
     if wake.returncode == 0 and (unlocked or already_awake):
         print(f"[recover] the iPad is awake (unlocked={format_flag(unlocked)})", flush=True)
-        return
+        return locked_before
 
     if not passcode:
         raise DeploymentError(
@@ -944,6 +951,7 @@ def ensure_device_unlocked(device_id: str) -> None:
         # on success too so the Actions log explains how the unlock went.
         print(detail, flush=True)
     print("[recover] passcode unlock finished", flush=True)
+    return locked_before
 
 
 @contextlib.contextmanager
@@ -1018,10 +1026,18 @@ def lock_device_display(device_id: str) -> None:
     print("[phase] locked the iPad display; SideStore continues with its silent-audio background task", flush=True)
 
 
+def should_restore_screen_off(initial_locked: bool, locked_now: bool) -> bool:
+    """Decide whether to press the lock button at the end of a deployment.
+
+    Only restore the screen-off state when the device was locked (screen off)
+    before the deployment and the runner knows it is not locked any more.
+    Pressing the lock button on an already locked device would wake it instead.
+    """
+    return bool(initial_locked) and not bool(locked_now)
+
+
 def restore_display_off(device_id: str) -> None:
     """Press the lock button once so the device returns to its screen-off state."""
-    if not env_flag("NONAME_LOCK_DURING_DEPLOY", True):
-        return
     if sys.platform == "darwin":
         print("[phase] press the device power button to lock it again", flush=True)
         return
@@ -1163,10 +1179,16 @@ def deploy(
 
     device = select_device(device_id)
     token = secrets.token_urlsafe(32)
-    session: dict[str, bool] = {"woke": False}
+    session: dict[str, bool] = {"initial_locked": False, "screen_locked": False}
 
     with keep_awake(device["identifier"]) as awake_process:
-        launch_configured_side_store(device["identifier"], token)
+        # Remember whether the screen was off before we woke the device, so the
+        # deployment can put it back to sleep when it finishes.
+        session["initial_locked"] = launch_configured_side_store(device["identifier"], token)
+        print(
+            f"[phase] initial display state: {'off (locked)' if session['initial_locked'] else 'on'}",
+            flush=True,
+        )
 
         host, port = (
             (host_override, DEPLOY_PORT)
@@ -1246,11 +1268,11 @@ def deploy(
                         recoveries=recoveries,
                         max_recoveries=max_recoveries,
                     ):
-                        # Mark the device as woken before attempting recovery:
-                        # recovery may raise after it already pressed the wake
-                        # button, and the finally block must still try to put
-                        # the display back to sleep.
-                        session["woke"] = True
+                        # Recovery is about to wake the device, so the screen will be on until
+                        # the next install stage locks it again. Clearing the flag
+                        # makes the finally block restore the screen-off state if
+                        # the job finishes before that happens.
+                        session["screen_locked"] = False
                         new_job = recover(
                             host=host,
                             port=port,
@@ -1326,7 +1348,7 @@ def deploy(
                                 f"({max_recoveries - recoveries} attempt(s) left)",
                                 flush=True,
                             )
-                            session["woke"] = True
+                            session["screen_locked"] = False
                             new_job = recover(
                                 host=host,
                                 port=port,
@@ -1362,6 +1384,7 @@ def deploy(
                         )
                         lock_device_display(device["identifier"])
                         locked = True
+                        session["screen_locked"] = True
 
                     time.sleep(POLL_INTERVAL)
 
@@ -1386,11 +1409,17 @@ def deploy(
         finally:
             server.shutdown()
             server.server_close()
-            if session["woke"]:
+            if should_restore_screen_off(session["initial_locked"], session["screen_locked"]):
+                print(
+                    "[phase] the iPad was screen-off before the deployment; restoring the screen-off state",
+                    flush=True,
+                )
                 try:
                     restore_display_off(device["identifier"])
                 except Exception as error:
                     print(f"[phase] failed to restore the screen-off state: {error}", flush=True)
+            elif session["initial_locked"]:
+                print("[phase] the display is already off; leaving it locked", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
