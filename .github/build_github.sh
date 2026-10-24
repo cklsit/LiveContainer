@@ -41,7 +41,13 @@ mv ./tmp/SideStoreSupport.framework Payload/LiveContainer.app/Frameworks
 
 # download SideStore
 cd tmp
-wget https://github.com/LiveContainer/SideStore/releases/download/nightly/SideStore.ipa
+if [[ -n "${SIDESTORE_IPA_PATH:-}" ]]; then
+  cp "$SIDESTORE_IPA_PATH" SideStore.ipa
+elif [[ -n "${SIDESTORE_IPA_URL:-}" ]]; then
+  curl -fL "$SIDESTORE_IPA_URL" -o SideStore.ipa
+else
+  wget https://github.com/LiveContainer/SideStore/releases/download/nightly/SideStore.ipa
+fi
 unzip SideStore.ipa
 cd ..
 

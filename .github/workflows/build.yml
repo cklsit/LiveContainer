@@ -9,6 +9,29 @@ on:
         description: Create a nightly release
         type: boolean
         required: false
+      sidestore_ipa_url:
+        description: Optional URL of a modified SideStore.ipa to embed
+        type: string
+        required: false
+      build_sidestore_from_source:
+        description: Build SideStore from source before creating LiveContainer+SideStore
+        type: boolean
+        required: false
+        default: false
+      sidestore_source_repository:
+        description: SideStore source repository when building from source
+        type: string
+        required: false
+        default: LiveContainer/SideStore
+      sidestore_source_ref:
+        description: SideStore source branch, tag, or commit
+        type: string
+        required: false
+        default: LiveContainerSupport
+
+concurrency:
+  group: xcode-build-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -17,6 +40,8 @@ jobs:
     env:
       scheme: LiveContainer
       archive_path: archive
+      SIDESTORE_IPA_URL: ${{ inputs.sidestore_ipa_url || vars.NONAME_SIDESTORE_IPA_URL }}
+      SIDESTORE_IPA_PATH: ${{ inputs.build_sidestore_from_source && format('{0}/side-store/SideStore.ipa', github.workspace) || '' }}
     outputs:
       scheme: ${{ steps.scheme.outputs.scheme }}
       archive_path: ${{ env.archive_path }}
@@ -53,6 +78,8 @@ jobs:
           file_to_build=`ls -A | grep -i \\.xcworkspace\$ || ls -A | grep -i \\.xcodeproj\$`
           file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
           echo "file_to_build=$file_to_build" >> $GITHUB_OUTPUT
+      - name: Test deployment runner
+        run: python3 -m unittest scripts/noname-deploy/test_deploy.py
       - name: Archive
         env:
           scheme: ${{ steps.scheme.outputs.scheme }}
@@ -66,7 +93,29 @@ jobs:
         with:
           name: ${{ env.archive_path }}.xcarchive.tar
           path: ${{ env.archive_path }}.xcarchive.tar
+
+      - name: Checkout SideStore source
+        if: inputs.build_sidestore_from_source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.sidestore_source_repository }}
+          ref: ${{ inputs.sidestore_source_ref }}
+          path: side-store
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Build SideStore source IPA
+        if: inputs.build_sidestore_from_source
+        working-directory: side-store
+        run: |
+          set -euo pipefail
+          brew install ldid xcbeautify
+          python3 scripts/ci/workflow.py build
+
       - name: Create IPA
+        env:
+          SIDESTORE_IPA_URL: ${{ env.SIDESTORE_IPA_URL }}
+          SIDESTORE_IPA_PATH: ${{ env.SIDESTORE_IPA_PATH }}
         run: |
           sh .github/build_github.sh
 

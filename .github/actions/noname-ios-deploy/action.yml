@@ -1,0 +1,75 @@
+name: Deploy Noname IPA to iPad
+description: Use the authenticated built-in SideStore endpoint from a trusted LAN runner.
+
+inputs:
+  ipa-path:
+    description: Optional local IPA path when artifact-run-id is not provided.
+    required: false
+    default: ""
+  artifact-run-id:
+    description: Optional workflow run ID used to download the IPA directly on the LAN runner.
+    required: false
+    default: ""
+  artifact-name:
+    description: Actions artifact name to download when artifact-run-id is set.
+    required: false
+    default: noname-ios-unsigned
+  bundle-id:
+    description: Bundle identifier to replace.
+    required: false
+    default: com.libnoname.noname
+  device-id:
+    description: Optional device UDID or devicectl identifier. Discovery requires exactly one paired iPad when omitted.
+    required: false
+    default: ""
+  host:
+    description: Optional iPad LAN host. Bonjour discovery is used when omitted.
+    required: false
+    default: ""
+  keep-ipa:
+    description: Keep the source IPA after deployment.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Download artifact on LAN runner
+      if: inputs.artifact-run-id != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT_REPOSITORY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        python_bin="${NONAME_DEPLOY_PYTHON:-python3}"
+        output_dir="$GITHUB_WORKSPACE/.noname-artifact"
+        ipa_path="$(
+          "$python_bin" "${{ github.action_path }}/../../../scripts/noname-deploy/download_artifact.py" \
+            --repository "$ARTIFACT_REPOSITORY" \
+            --run-id "${{ inputs.artifact-run-id }}" \
+            --name "${{ inputs.artifact-name }}" \
+            --output-dir "$output_dir" |
+            tail -n 1
+        )"
+        echo "NONAME_DOWNLOADED_IPA=$ipa_path" >> "$GITHUB_ENV"
+
+    - name: Deploy IPA through built-in SideStore
+      shell: bash
+      env:
+        NONAME_IOS_DEVICE_ID: ${{ inputs.device-id }}
+        NONAME_IOS_HOST: ${{ inputs.host }}
+        NONAME_DEPLOY_PRODUCTION: "1"
+      run: |
+        set -euo pipefail
+        ipa_path="${NONAME_DOWNLOADED_IPA:-${{ inputs.ipa-path }}}"
+        if [[ -z "$ipa_path" ]]; then
+          echo "ipa-path or artifact-run-id is required" >&2
+          exit 1
+        fi
+        args=(--ipa "$ipa_path" --bundle-id "${{ inputs.bundle-id }}")
+        if [[ "${{ inputs.keep-ipa }}" == "true" ]]; then
+          args+=(--keep-ipa)
+        fi
+        python_bin="${NONAME_DEPLOY_PYTHON:-python3}"
+        "$python_bin" "${{ github.action_path }}/../../../scripts/noname-deploy/deploy.py" "${args[@]}"
