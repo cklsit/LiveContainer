@@ -201,7 +201,60 @@ def select_device(explicit_device: str | None) -> dict[str, Any]:
     return select_pymobiledevice3_device()
 
 
-def launch_configured_side_store(device_id: str, token: str) -> None:
+def launch_local_dev_vpn(device_id: str) -> None:
+    if sys.platform == "darwin":
+        run(
+            [
+                "xcrun",
+                "devicectl",
+                "device",
+                "process",
+                "launch",
+                "--device",
+                device_id,
+                "--terminate-existing",
+                LOCAL_DEV_VPN_BUNDLE_ID,
+            ],
+            timeout=60,
+        )
+        return
+
+    environment = os.environ.copy()
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    run_with_retries(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--button",
+            "home",
+        ],
+        attempts=4,
+        timeout=120,
+        env=environment,
+        redact=(device_id,),
+    )
+    time.sleep(1)
+    print("Launching LocalDevVPN and waiting for its Auto-connect setting", flush=True)
+    run_with_retries(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--bundle-id",
+            LOCAL_DEV_VPN_BUNDLE_ID,
+        ],
+        attempts=3,
+        timeout=120,
+        env=environment,
+        redact=(device_id,),
+    )
+
+
+def enable_local_dev_vpn(device_id: str) -> None:
+    print("No utun detected; enabling LocalDevVPN through localdevvpn://enable", flush=True)
     if sys.platform == "darwin":
         run(
             [
@@ -219,7 +272,32 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             ],
             timeout=60,
         )
-        time.sleep(5)
+        return
+
+    helper = Path(__file__).with_name("launch_ios_app.py")
+    environment = os.environ.copy()
+    run_with_retries(
+        [
+            sys.executable,
+            str(helper),
+            "--udid",
+            device_id,
+            "--bundle-id",
+            LOCAL_DEV_VPN_BUNDLE_ID,
+            "--open-url",
+            LOCAL_DEV_VPN_ENABLE_URL,
+        ],
+        attempts=4,
+        timeout=120,
+        env=environment,
+        redact=(device_id,),
+    )
+
+
+def launch_configured_side_store(device_id: str, token: str) -> None:
+    if sys.platform == "darwin":
+        launch_local_dev_vpn(device_id)
+        time.sleep(10)
         query = urllib.parse.urlencode({"token": token})
         payload_url = f"sidestore://noname-deploy/configure?{query}"
         run(
@@ -285,66 +363,8 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         redact=(device_id,),
     )
 
-    run_with_retries(
-        [
-            sys.executable,
-            str(helper),
-            "--udid",
-            device_id,
-            "--button",
-            "home",
-        ],
-        attempts=4,
-        timeout=120,
-        env=environment,
-        redact=(device_id,),
-    )
-    time.sleep(1)
-
-    local_dev_vpn_command = [
-        sys.executable,
-        str(helper),
-        "--udid",
-        device_id,
-        "--bundle-id",
-        LOCAL_DEV_VPN_BUNDLE_ID,
-        "--open-url",
-        LOCAL_DEV_VPN_ENABLE_URL,
-    ]
-    print("Enabling LocalDevVPN through localdevvpn://enable", flush=True)
-    try:
-        run_with_retries(
-            local_dev_vpn_command,
-            attempts=3,
-            timeout=120,
-            env=environment,
-            redact=(device_id,),
-        )
-    except DeploymentError:
-        # A locked/dimmed iPad cannot launch LocalDevVPN. Fall back to the
-        # one-time focus traversal needed to inspect and dismiss the lock screen.
-        print("LocalDevVPN could not open; attempting one-time iPad wake", flush=True)
-        run_with_retries(
-            [
-                sys.executable,
-                str(helper),
-                "--udid",
-                device_id,
-                "--wake",
-            ],
-            attempts=4,
-            timeout=120,
-            env=environment,
-            redact=(device_id,),
-        )
-        run_with_retries(
-            local_dev_vpn_command,
-            attempts=4,
-            timeout=120,
-            env=environment,
-            redact=(device_id,),
-        )
-    time.sleep(8)
+    launch_local_dev_vpn(device_id)
+    time.sleep(10)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
     run_with_retries(
@@ -587,6 +607,15 @@ def signed_request(
         return error.code, detail
 
 
+def is_vpn_connection_error(message: str) -> bool:
+    normalized = message.casefold()
+    return (
+        "no utun interface" in normalized
+        or "localdevvpn is not connected" in normalized
+        or "vpn connection error" in normalized
+    )
+
+
 def deploy(
     *,
     ipa_path: Path,
@@ -628,44 +657,57 @@ def deploy(
             "ipaURL": ipa_url,
             "sha256": digest,
         }
-        status, response = signed_request(
-            host,
-            port,
-            token,
-            payload,
-            method="POST",
-            path="/v1/deploy",
-        )
-        if status != 202 or not response.get("ok"):
-            raise DeploymentError(f"Deployment request was rejected: {response}")
-        job_id = response.get("jobID")
-        if not job_id:
-            raise DeploymentError("SideStore did not return a deployment job ID")
 
-        print(f"Deployment job: {job_id}")
-        deadline = time.monotonic() + timeout
-        job_path = f"/v1/jobs/{job_id}"
-        while time.monotonic() < deadline:
-            status, job = signed_request(
+        def run_job() -> None:
+            status, response = signed_request(
                 host,
                 port,
                 token,
-                {},
-                method="GET",
-                path=job_path,
-                body=b"",
+                payload,
+                method="POST",
+                path="/v1/deploy",
             )
-            if status != 200 or not job.get("ok"):
-                raise DeploymentError(f"Deployment status request was rejected: {job}")
-            status_text = job.get("status")
-            message = job.get("message") or ""
-            print(f"[{status_text}] {message}", flush=True)
-            if status_text == "succeeded":
+            if status != 202 or not response.get("ok"):
+                raise DeploymentError(f"Deployment request was rejected: {response}")
+            job_id = response.get("jobID")
+            if not job_id:
+                raise DeploymentError("SideStore did not return a deployment job ID")
+
+            print(f"Deployment job: {job_id}")
+            deadline = time.monotonic() + timeout
+            job_path = f"/v1/jobs/{job_id}"
+            while time.monotonic() < deadline:
+                status, job = signed_request(
+                    host,
+                    port,
+                    token,
+                    {},
+                    method="GET",
+                    path=job_path,
+                    body=b"",
+                )
+                if status != 200 or not job.get("ok"):
+                    raise DeploymentError(f"Deployment status request was rejected: {job}")
+                status_text = job.get("status")
+                message = job.get("message") or ""
+                print(f"[{status_text}] {message}", flush=True)
+                if status_text == "succeeded":
+                    return
+                if status_text == "failed":
+                    raise DeploymentError(message or "Deployment failed")
+                time.sleep(2)
+            raise DeploymentError("Timed out waiting for SideStore deployment")
+
+        for attempt in range(2):
+            try:
+                run_job()
                 return
-            if status_text == "failed":
-                raise DeploymentError(message or "Deployment failed")
-            time.sleep(2)
-        raise DeploymentError("Timed out waiting for SideStore deployment")
+            except DeploymentError as error:
+                if attempt == 0 and is_vpn_connection_error(str(error)):
+                    enable_local_dev_vpn(device["identifier"])
+                    time.sleep(10)
+                    continue
+                raise
     finally:
         server.shutdown()
         server.server_close()

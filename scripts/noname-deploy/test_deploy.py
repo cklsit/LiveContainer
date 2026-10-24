@@ -138,6 +138,14 @@ class CanonicalRequestTests(unittest.TestCase):
         self.assertEqual(run_mock.call_count, 2)
         self.assertEqual(result.returncode, 0)
 
+    def test_vpn_connection_errors_are_recognized(self):
+        self.assertTrue(
+            deploy.is_vpn_connection_error(
+                "VPN Connection Error: No utun interface detected - LocalDevVPN is not connected"
+            )
+        )
+        self.assertFalse(deploy.is_vpn_connection_error("code signature is invalid"))
+
 
 if __name__ == "__main__":
     unittest.main()
