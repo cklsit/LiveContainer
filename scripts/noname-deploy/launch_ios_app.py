@@ -398,6 +398,9 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
                 "Could not show the passcode keypad. The iPad is probably awake "
                 "and unlocked already, or its lock screen uses an unsupported layout."
             )
+        # Never print the value itself; the length is enough to diagnose a stale
+        # secret (this iPad expects six digits).
+        print(f"[unlock] passcode keypad is open; entering {len(passcode)} digits", flush=True)
 
         # Taps are used instead of HID keyboard events: the system passcode UI
         # does not reliably focus a hardware keyboard, and a missed keystroke
@@ -419,6 +422,7 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
 
         await asyncio.sleep(2.5)
         captions = await accessibility_captions(rsd)
+        print(f"[unlock] lock-screen state after entry: {captions[:3]}", flush=True)
         if captions_report_locked(captions) or captions_show_passcode_keypad(captions):
             raise LaunchError(
                 "Passcode entry did not unlock the iPad. Verify NONAME_IOS_PASSCODE; "
