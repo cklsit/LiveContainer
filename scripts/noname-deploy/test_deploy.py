@@ -147,6 +147,13 @@ class CanonicalRequestTests(unittest.TestCase):
                 "VPN Connection Error: No utun interface detected - LocalDevVPN is not connected"
             )
         )
+        self.assertTrue(
+            deploy.is_vpn_connection_error(
+                "SideStore is unable to reach the device endpoint: "
+                "VPN tunnel iface is up but tunnel peer IP is not yet reachable "
+                "Cause: DeviceEndpointNotInitialized"
+            )
+        )
         self.assertFalse(deploy.is_vpn_connection_error("code signature is invalid"))
 
     def test_passcode_digits_map_to_hid_usages(self):

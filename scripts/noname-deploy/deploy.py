@@ -456,7 +456,9 @@ def launch_configured_side_store(device_id: str, token: str) -> bool:
     # explicit passcode entry after the wake gesture.
     locked_before = ensure_device_unlocked(device_id)
     launch_local_dev_vpn(device_id)
-    time.sleep(10)
+    # The device endpoint becomes routable a few seconds after the VPN starts;
+    # SideStore rejects the download when it asks too early.
+    time.sleep(15)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
     run_with_retries(
@@ -710,6 +712,11 @@ def is_vpn_connection_error(message: str) -> bool:
         "no utun interface" in normalized
         or "localdevvpn is not connected" in normalized
         or "vpn connection error" in normalized
+        # SideStore reports this when LocalDevVPN is up but its peer endpoint is
+        # not routable yet; toggling the VPN and retrying clears it.
+        or "unable to reach the device endpoint" in normalized
+        or "deviceendpointnotinitialized" in normalized
+        or "tunnel peer ip is not yet reachable" in normalized
     )
 
 
@@ -1403,7 +1410,7 @@ def deploy(
                 except DeploymentError as error:
                     if attempt == 0 and is_vpn_connection_error(str(error)):
                         enable_local_dev_vpn(device["identifier"])
-                        time.sleep(10)
+                        time.sleep(15)
                         continue
                     raise
         finally:
