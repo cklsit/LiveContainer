@@ -31,6 +31,7 @@ SERVICE_DNS_TYPE = f"{SERVICE_TYPE}.local."
 DEFAULT_BUNDLE_ID = "com.libnoname.noname"
 HOST_BUNDLE_ID = "com.kdt.livecontainer"
 LOCAL_DEV_VPN_BUNDLE_ID = "com.jkcoxson.LocalDevVPN"
+LOCAL_DEV_VPN_ENABLE_URL = "localdevvpn://enable"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -212,11 +213,13 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
                 "--device",
                 device_id,
                 "--terminate-existing",
+                "--payload-url",
+                LOCAL_DEV_VPN_ENABLE_URL,
                 LOCAL_DEV_VPN_BUNDLE_ID,
             ],
             timeout=60,
         )
-        time.sleep(2)
+        time.sleep(5)
         query = urllib.parse.urlencode({"token": token})
         payload_url = f"sidestore://noname-deploy/configure?{query}"
         run(
@@ -302,13 +305,15 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             device_id,
             "--bundle-id",
             LOCAL_DEV_VPN_BUNDLE_ID,
+            "--open-url",
+            LOCAL_DEV_VPN_ENABLE_URL,
         ],
         attempts=4,
         timeout=120,
         env=environment,
         redact=(device_id,),
     )
-    time.sleep(2)
+    time.sleep(5)
 
     environment["NONAME_DEPLOY_TOKEN"] = token
     run_with_retries(
