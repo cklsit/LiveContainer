@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import plistlib
+import re
 import sys
 import traceback
 import urllib.parse
@@ -85,6 +86,22 @@ def captions_show_passcode_keypad(captions: list[str]) -> bool:
 
 def captions_show_passcode_prompt(captions: list[str]) -> bool:
     return any(marker in caption.casefold() for caption in captions for marker in PASSCODE_PROMPT_MARKERS)
+
+
+async def read_passcode_digit_count(rsd: Any) -> int | None:
+    return passcode_digit_count(await accessibility_captions(rsd))
+
+
+def passcode_digit_count(captions: list[str]) -> int | None:
+    """Read "已输入N位" / "N digits entered" from the keypad accessibility tree."""
+    for caption in captions:
+        match = re.search(r"已输入\s*(\d+)\s*位", caption)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"(\d+)\s+digits?\s+entered", caption, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 async def press_home(rsd: Any) -> None:
@@ -401,6 +418,8 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
         # Never print the value itself; the length is enough to diagnose a stale
         # secret (this iPad expects six digits).
         print(f"[unlock] passcode keypad is open; entering {len(passcode)} digits", file=sys.stderr, flush=True)
+        # The keypad animates in; a tap that arrives too early is swallowed.
+        await asyncio.sleep(1.2)
 
         # Taps are used instead of HID keyboard events: the system passcode UI
         # does not reliably focus a hardware keyboard, and a missed keystroke
@@ -417,8 +436,19 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
             point = PASSCODE_KEY_TAPS.get(digit)
             if point is None:
                 raise LaunchError(f"Unsupported passcode digit: {digit!r}")
-            await tap(rsd, point)
-            await asyncio.sleep(0.35)
+            entered = await read_passcode_digit_count(rsd)
+            for _ in range(3):
+                await tap(rsd, point)
+                await asyncio.sleep(0.5)
+                current = await read_passcode_digit_count(rsd)
+                # None means the keypad is gone: the last digit submitted the code.
+                if current is None or (entered is not None and current > entered):
+                    break
+            else:
+                raise LaunchError(
+                    "A passcode key tap did not register; the keypad layout may differ "
+                    "from the expected landscape grid."
+                )
 
         await asyncio.sleep(2.5)
         captions = await accessibility_captions(rsd)
