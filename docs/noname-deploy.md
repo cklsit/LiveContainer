@@ -108,11 +108,11 @@ the lock screen when no passcode is required, opens LocalDevVPN, and allows the
 configured tunnel to resume. SideStore's uninstall and signing operations rely
 on that connection.
 The Linux installer also starts a lightweight keep-awake process. While exactly
-one paired iPad is visible, it renews a `PreventUserIdleSystemSleep` assertion,
-wakes the display, and dismisses an auto-lock screen when no passcode is
-required so normal idle sleep does not take the device off the network. This is
-best-effort: a powered-off device, disabled Wi-Fi, or active passcode lock still
-requires user action.
+one paired iPad is visible, it only renews a `PreventUserIdleSystemSleep`
+assertion. It deliberately does not traverse accessibility focus in the
+background because doing so visibly selects home-screen elements. If launching
+LocalDevVPN fails because the display is off or locked, the deployment path
+falls back to a one-time wake/unlock attempt.
 
 ## Reusable action
 

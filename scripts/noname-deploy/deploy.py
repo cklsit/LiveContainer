@@ -276,19 +276,6 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
             str(helper),
             "--udid",
             device_id,
-            "--wake",
-        ],
-        attempts=4,
-        timeout=120,
-        env=environment,
-        redact=(device_id,),
-    )
-    run_with_retries(
-        [
-            sys.executable,
-            str(helper),
-            "--udid",
-            device_id,
             "--hold-awake",
             "1800",
         ],
@@ -297,22 +284,48 @@ def launch_configured_side_store(device_id: str, token: str) -> None:
         env=environment,
         redact=(device_id,),
     )
-    run_with_retries(
-        [
-            sys.executable,
-            str(helper),
-            "--udid",
-            device_id,
-            "--bundle-id",
-            LOCAL_DEV_VPN_BUNDLE_ID,
-            "--open-url",
-            LOCAL_DEV_VPN_ENABLE_URL,
-        ],
-        attempts=4,
-        timeout=120,
-        env=environment,
-        redact=(device_id,),
-    )
+
+    local_dev_vpn_command = [
+        sys.executable,
+        str(helper),
+        "--udid",
+        device_id,
+        "--bundle-id",
+        LOCAL_DEV_VPN_BUNDLE_ID,
+        "--open-url",
+        LOCAL_DEV_VPN_ENABLE_URL,
+    ]
+    try:
+        run_with_retries(
+            local_dev_vpn_command,
+            attempts=3,
+            timeout=120,
+            env=environment,
+            redact=(device_id,),
+        )
+    except DeploymentError:
+        # A locked/dimmed iPad cannot launch LocalDevVPN. Fall back to the
+        # one-time focus traversal needed to inspect and dismiss the lock screen.
+        run_with_retries(
+            [
+                sys.executable,
+                str(helper),
+                "--udid",
+                device_id,
+                "--wake",
+            ],
+            attempts=4,
+            timeout=120,
+            env=environment,
+            redact=(device_id,),
+        )
+        run_with_retries(
+            local_dev_vpn_command,
+            attempts=4,
+            timeout=120,
+            env=environment,
+            redact=(device_id,),
+        )
     time.sleep(5)
 
     environment["NONAME_DEPLOY_TOKEN"] = token

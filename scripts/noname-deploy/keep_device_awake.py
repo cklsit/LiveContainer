@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from discover_ios_devices import discover
-from launch_ios_app import hold_awake, wake_and_unlock
+from launch_ios_app import hold_awake
 
 
 async def run(interval: int, assertion_timeout: int) -> None:
@@ -30,7 +30,6 @@ async def run(interval: int, assertion_timeout: int) -> None:
         if len(devices) == 1:
             device_id = str(devices[0]["identifier"])
             try:
-                await wake_and_unlock(device_id)
                 await hold_awake(device_id, assertion_timeout)
                 print(f"Awake assertion renewed for {device_id}", flush=True)
             except Exception as error:
