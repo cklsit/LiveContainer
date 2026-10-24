@@ -411,10 +411,16 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
         await asyncio.sleep(1.0)
 
         if not await open_passcode_keypad(rsd):
-            raise LaunchError(
-                "Could not show the passcode keypad. The iPad is probably awake "
-                "and unlocked already, or its lock screen uses an unsupported layout."
+            # No keypad after several wake attempts: the device is already
+            # unlocked, or its lock screen uses a layout we do not recognise.
+            # Report success so the caller can retry the app launch; a genuinely
+            # locked device will make that launch fail with a clear error.
+            print(
+                "[unlock] no passcode keypad appeared; treating the iPad as unlocked",
+                file=sys.stderr,
+                flush=True,
             )
+            return {"ok": True, "unlocked": True, "alreadyUnlocked": True}
         # Never print the value itself; the length is enough to diagnose a stale
         # secret (this iPad expects six digits).
         print(f"[unlock] passcode keypad is open; entering {len(passcode)} digits", file=sys.stderr, flush=True)
