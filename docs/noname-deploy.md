@@ -120,11 +120,16 @@ Deployment state machine, so the screen can stay off without losing the job:
    runner wakes the iPad, unlocks it (passcode from `NONAME_IOS_PASSCODE`),
    relaunches LiveContainer+SideStore with a fresh token, waits for `/v1/hello`
    again and resubmits the deployment as a new job.
-5. If the interrupted job had already reached the install stage, the runner
+5. A job that reports `failed` **while the display is locked** gets the same
+   wake-and-retry treatment instead of ending the run: iOS may refuse the
+   install because `installd` needs an unlocked keybag, which looks like a plain
+   failure. A failure reported with the screen on is treated as genuine and
+   stops the deployment.
+6. If the interrupted job had already reached the install stage, the runner
    compares the installed `CFBundleVersion` with the IPA's before reinstalling.
    An identical build means the install finished just before the suspension and
-   no work is redone.
-6. When a recovery happened, one more lock-button press restores the screen-off
+   the run is treated as complete.
+7. When a recovery happened, one more lock-button press restores the screen-off
    state after the run.
 
 Environment variables:

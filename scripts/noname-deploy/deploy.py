@@ -802,6 +802,28 @@ def should_recover(
     return recoveries < max_recoveries
 
 
+def should_retry_failure(
+    status: str,
+    locked: bool,
+    recoveries: int,
+    max_recoveries: int,
+) -> bool:
+    """Decide whether a failed job deserves one wake-and-retry cycle.
+
+    A job that reports ``failed`` while the display is locked has two possible
+    causes: a real failure (bad signature, network) or iOS refusing the install
+    because ``installd`` needs an unlocked keybag. The second one succeeds as
+    soon as the device is awake and unlocked, so the runner spends a recovery
+    attempt instead of failing the whole nightly run. When the display is on, a
+    failure is treated as genuine and reported immediately.
+    """
+    if (status or "").casefold() != "failed":
+        return False
+    if not locked:
+        return False
+    return recoveries < max_recoveries
+
+
 def hello_state(
     host: str,
     port: int,
@@ -1073,8 +1095,14 @@ def recover(
     message: str,
     recoveries: int,
     max_recoveries: int,
+    install_stage: bool | None = None,
 ) -> str | None:
     """Wake, unlock and restart the SideStore host, then resume the deployment.
+
+    ``install_stage`` overrides the stage guess derived from ``message``. Callers
+    that already know the previous job reached the install stage (for example a
+    locked-display failure) pass ``True`` so the installed version is compared
+    before reinstalling.
 
     Returns the new job ID, or None when the interrupted job had already
     installed the expected build and no reinstall is necessary.
@@ -1083,13 +1111,11 @@ def recover(
         raise DeploymentError(
             f"SideStore stopped answering and the recovery budget of {max_recoveries} is exhausted"
         )
-    print(
-        f"[recover] SideStore stopped answering after {RECOVERY_FAILURE_THRESHOLD} liveness failures; "
-        f"starting recovery {recoveries + 1}/{max_recoveries}",
-        flush=True,
-    )
+    print(f"[recover] starting recovery {recoveries + 1}/{max_recoveries}", flush=True)
 
-    if is_install_stage(message):
+    if install_stage is None:
+        install_stage = is_install_stage(message)
+    if install_stage:
         expected = ipa_build_version(ipa_path)
         if not expected:
             print("[recover] could not read CFBundleVersion from the IPA; skipping the install-stage shortcut", flush=True)
@@ -1299,6 +1325,43 @@ def deploy(
                         )
                         return
                     if status_text == "failed":
+                        if should_retry_failure(status_text, locked, recoveries, max_recoveries):
+                            # iOS may refuse the install while the display is
+                            # locked (installd needs the keybag unlocked), which
+                            # surfaces as "failed" instead of a suspension.
+                            print(
+                                f"[recover] the job failed while the display was locked "
+                                f"({message or 'no message'}); waking the iPad and retrying "
+                                f"({max_recoveries - recoveries} attempt(s) left)",
+                                flush=True,
+                            )
+                            session["woke"] = True
+                            new_job = recover(
+                                host=host,
+                                port=port,
+                                token=token,
+                                device_id=device["identifier"],
+                                payload=payload,
+                                ipa_path=ipa_path,
+                                message=message,
+                                recoveries=recoveries,
+                                max_recoveries=max_recoveries,
+                                install_stage=True,
+                            )
+                            recoveries += 1
+                            locked = False
+                            failures = 0
+                            last_alive = None
+                            last_phase = None
+                            if new_job is None:
+                                print(
+                                    "[phase] the expected build is already installed; "
+                                    "treating the failed job as complete",
+                                    flush=True,
+                                )
+                                return
+                            job_id = new_job
+                            continue
                         raise DeploymentError(message or "Deployment failed")
 
                     if lock_during_deploy and not locked and is_install_stage(message):

@@ -303,6 +303,24 @@ class UniqueBuildVersionTests(unittest.TestCase):
             self.assertTrue(deploy.is_unique_build_version(version), version)
 
 
+class ShouldRetryFailureTests(unittest.TestCase):
+    def test_locked_failure_with_budget_is_retried(self):
+        self.assertTrue(deploy.should_retry_failure("failed", True, 0, 2))
+        self.assertTrue(deploy.should_retry_failure("failed", True, 1, 2))
+
+    def test_only_failed_statuses_are_retried(self):
+        for status in ("", "queued", "running", "succeeded", "error"):
+            self.assertFalse(deploy.should_retry_failure(status, True, 0, 2), status)
+        self.assertTrue(deploy.should_retry_failure("FAILED", True, 0, 2))
+
+    def test_unlocked_failure_is_reported_immediately(self):
+        self.assertFalse(deploy.should_retry_failure("failed", False, 0, 2))
+
+    def test_retry_respects_the_recovery_budget(self):
+        self.assertFalse(deploy.should_retry_failure("failed", True, 2, 2))
+        self.assertFalse(deploy.should_retry_failure("failed", True, 0, 0))
+
+
 class IPABuildVersionTests(unittest.TestCase):
     @staticmethod
     def write_ipa(directory: str, version: str) -> pathlib.Path:
