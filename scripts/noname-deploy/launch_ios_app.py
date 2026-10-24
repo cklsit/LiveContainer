@@ -418,12 +418,39 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
         # Never print the value itself; the length is enough to diagnose a stale
         # secret (this iPad expects six digits).
         print(f"[unlock] passcode keypad is open; entering {len(passcode)} digits", file=sys.stderr, flush=True)
-        # The keypad animates in; a tap that arrives too early is swallowed.
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(1.5)
 
-        # Taps are used instead of HID keyboard events: the system passcode UI
-        # does not reliably focus a hardware keyboard, and a missed keystroke
-        # would silently turn into a wrong passcode attempt.
+        # A hardware keyboard is the most reliable input once the keypad is up:
+        # no coordinates, no animation race. If it does not register anything we
+        # fall back to tapping the on-screen keys below.
+        async with touch_session(rsd) as service:
+            keyboard_id = await service.create_keyboard_service()
+            for usage in passcode_usages(passcode):
+                await service.send_keyboard(keyboard_id, [usage])
+                await asyncio.sleep(0.12)
+                await service.send_keyboard(keyboard_id, [])
+                await asyncio.sleep(0.12)
+            await service.send_keyboard(keyboard_id, [0x28])
+            await asyncio.sleep(0.05)
+            await service.send_keyboard(keyboard_id, [])
+
+        await asyncio.sleep(2.5)
+        captions = await accessibility_captions(rsd)
+        typed = passcode_digit_count(captions)
+        print(
+            f"[unlock] after keyboard entry: digits={typed} locked={captions_report_locked(captions)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if not captions_report_locked(captions) and not captions_show_passcode_keypad(captions):
+            return {"ok": True, "unlocked": True}
+        if typed:
+            raise LaunchError(
+                "The keyboard entered part of the passcode but the iPad stayed locked; "
+                "refusing to mix keyboard and tap input. Verify NONAME_IOS_PASSCODE."
+            )
+
+        # Keyboard input did not reach the field: tap the on-screen keys instead.
         async with ScreenCaptureService(rsd) as service:
             response = await service.capture_screenshot()
         if screenshot_is_portrait(response["image"]):
@@ -432,23 +459,16 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
                 "only supports the landscape keypad layout."
             )
 
-        for digit in passcode:
+        for index, digit in enumerate(passcode):
             point = PASSCODE_KEY_TAPS.get(digit)
             if point is None:
                 raise LaunchError(f"Unsupported passcode digit: {digit!r}")
-            entered = await read_passcode_digit_count(rsd)
-            for _ in range(3):
-                await tap(rsd, point)
-                await asyncio.sleep(0.5)
-                current = await read_passcode_digit_count(rsd)
-                # None means the keypad is gone: the last digit submitted the code.
-                if current is None or (entered is not None and current > entered):
-                    break
-            else:
-                raise LaunchError(
-                    "A passcode key tap did not register; the keypad layout may differ "
-                    "from the expected landscape grid."
-                )
+            await tap(rsd, point)
+            await asyncio.sleep(0.7)
+            current = await read_passcode_digit_count(rsd)
+            print(f"[unlock] tap {index + 1}/{len(passcode)}: digits={current}", file=sys.stderr, flush=True)
+            if current is None:
+                break
 
         await asyncio.sleep(2.5)
         captions = await accessibility_captions(rsd)

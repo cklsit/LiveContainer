@@ -938,6 +938,11 @@ def ensure_device_unlocked(device_id: str) -> None:
         raise DeploymentError(
             f"Automatic passcode unlock failed: {detail or unlock.returncode}"
         )
+    detail = redact_text((unlock.stderr or "").strip(), redactions)
+    if detail:
+        # The helper writes its step-by-step diagnostics to stderr; surface them
+        # on success too so the Actions log explains how the unlock went.
+        print(detail, flush=True)
     print("[recover] passcode unlock finished", flush=True)
 
 
