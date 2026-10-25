@@ -126,7 +126,7 @@ async def open_passcode_keypad(rsd: Any) -> bool:
     keypad only appears after tapping "使用密码". Face ID iPads show the keypad
     right after a wake, so the loop also accepts that state directly.
     """
-    for attempt in range(3):
+    for attempt in range(5):
         captions = await accessibility_captions(rsd)
         if captions_show_passcode_keypad(captions):
             return True
@@ -135,19 +135,18 @@ async def open_passcode_keypad(rsd: Any) -> bool:
             await asyncio.sleep(1.5)
             if captions_show_passcode_keypad(await accessibility_captions(rsd)):
                 return True
-            # The tap missed or dismissed the dialog; bring it back below.
+            continue
 
-        # A single Home press only wakes the display on a Home-button iPad.
-        # The Touch ID / "使用密码" dialog appears after a second, separate
-        # press, and swiping up dismisses it again. Use two presses with a
-        # gap long enough that iOS does not read them as a double-click.
+        # On a Home-button iPad the Touch ID dialog needs a second press when
+        # the display was off, but a single press when the lock screen is
+        # already visible. Press once, then wait long enough for the dialog
+        # animation and read again before deciding to press a second time;
+        # pressing twice in a row would open and immediately dismiss it.
         await press_home(rsd)
-        await asyncio.sleep(1.2)
-        await press_home(rsd)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2.0)
         captions = await accessibility_captions(rsd)
         print(
-            f"[unlock] after two home presses ({attempt + 1}/3): {captions[:3]}",
+            f"[unlock] after home press ({attempt + 1}/5): {captions[:3]}",
             file=sys.stderr,
             flush=True,
         )
@@ -428,9 +427,8 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
     try:
         rsd = await tunnel.aopen()
-        await press_home(rsd)
-        await asyncio.sleep(1.0)
-
+        # Do not press Home here: --wake already did, and an extra press can
+        # dismiss the Touch ID dialog it just opened.
         if not await open_passcode_keypad(rsd):
             # No keypad after several wake attempts: the device is already
             # unlocked, or its lock screen uses a layout we do not recognise.
