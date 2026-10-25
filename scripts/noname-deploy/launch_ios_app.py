@@ -126,18 +126,39 @@ async def open_passcode_keypad(rsd: Any) -> bool:
     keypad only appears after tapping "使用密码". Face ID iPads show the keypad
     right after a wake, so the loop also accepts that state directly.
     """
-    for _ in range(4):
+    for attempt in range(3):
         captions = await accessibility_captions(rsd)
         if captions_show_passcode_keypad(captions):
             return True
         if captions_show_passcode_prompt(captions):
             await tap(rsd, USE_PASSCODE_TAP)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.5)
             if captions_show_passcode_keypad(await accessibility_captions(rsd)):
                 return True
+            # The tap missed or dismissed the dialog; bring it back below.
+
+        # A single Home press only wakes the display on a Home-button iPad.
+        # The Touch ID / "使用密码" dialog appears after a second, separate
+        # press, and swiping up dismisses it again. Use two presses with a
+        # gap long enough that iOS does not read them as a double-click.
         await press_home(rsd)
-        await asyncio.sleep(1.0)
-    return captions_show_passcode_keypad(await accessibility_captions(rsd))
+        await asyncio.sleep(1.2)
+        await press_home(rsd)
+        await asyncio.sleep(1.5)
+        captions = await accessibility_captions(rsd)
+        print(
+            f"[unlock] after two home presses ({attempt + 1}/3): {captions[:3]}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if captions_show_passcode_keypad(captions):
+            return True
+        if captions_show_passcode_prompt(captions):
+            await tap(rsd, USE_PASSCODE_TAP)
+            await asyncio.sleep(1.5)
+            if captions_show_passcode_keypad(await accessibility_captions(rsd)):
+                return True
+    return False
 
 
 def screenshot_is_portrait(image: bytes) -> bool:
