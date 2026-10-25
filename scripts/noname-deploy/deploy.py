@@ -455,6 +455,7 @@ def launch_configured_side_store(device_id: str, token: str) -> bool:
     # device is locked (coredevice error 10002), and a Touch ID iPad needs an
     # explicit passcode entry after the wake gesture.
     locked_before = ensure_device_unlocked(device_id)
+    forced_unlock = False
     try:
         launch_local_dev_vpn(device_id)
     except DeploymentError:
@@ -483,6 +484,7 @@ def launch_configured_side_store(device_id: str, token: str) -> bool:
             env=environment,
             redact=(device_id, passcode),
         )
+        forced_unlock = True
         launch_local_dev_vpn(device_id)
     # The device endpoint becomes routable a few seconds after the VPN starts;
     # SideStore rejects the download when it asks too early.
@@ -505,7 +507,9 @@ def launch_configured_side_store(device_id: str, token: str) -> bool:
         env=environment,
         redact=(device_id, token),
     )
-    return locked_before
+    # A forced passcode pass also proves the device was locked, even when the
+    # accessibility check missed it; count it as an initially screen-off device.
+    return locked_before or forced_unlock
 
 
 def terminate_process(process: subprocess.Popen[Any]) -> None:
