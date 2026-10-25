@@ -145,8 +145,14 @@ async def open_passcode_keypad(rsd: Any) -> bool:
         await press_home(rsd)
         await asyncio.sleep(2.0)
         captions = await accessibility_captions(rsd)
+        # Never print the accessibility captions: they contain the device name
+        # and other personal data. Booleans are enough to diagnose the state.
         print(
-            f"[unlock] after home press ({attempt + 1}/5): {captions[:3]}",
+            f"[unlock] home press {attempt + 1}/5: "
+            f"locked={captions_report_locked(captions)} "
+            f"prompt={captions_show_passcode_prompt(captions)} "
+            f"keypad={captions_show_passcode_keypad(captions)} "
+            f"elements={len(captions)}",
             file=sys.stderr,
             flush=True,
         )
@@ -497,7 +503,12 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
 
         await asyncio.sleep(2.5)
         captions = await accessibility_captions(rsd)
-        print(f"[unlock] lock-screen state after entry: {captions[:3]}", file=sys.stderr, flush=True)
+        print(
+            f"[unlock] after entry: locked={captions_report_locked(captions)} "
+            f"keypad={captions_show_passcode_keypad(captions)}",
+            file=sys.stderr,
+            flush=True,
+        )
         if captions_report_locked(captions) or captions_show_passcode_keypad(captions):
             raise LaunchError(
                 "Passcode entry did not unlock the iPad. Verify NONAME_IOS_PASSCODE; "
