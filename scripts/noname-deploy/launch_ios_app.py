@@ -111,6 +111,14 @@ async def press_home(rsd: Any) -> None:
         await service.send_button(0x0C, 0x40, HID_BUTTON_STATE_UP)
 
 
+async def press_lock(rsd: Any) -> None:
+    """Press the power/lock button once (toggles the display)."""
+    async with IndigoHIDService(rsd) as service:
+        await service.send_button(0x0C, 0x30, HID_BUTTON_STATE_DOWN)
+        await asyncio.sleep(0.1)
+        await service.send_button(0x0C, 0x30, HID_BUTTON_STATE_UP)
+
+
 async def tap(rsd: Any, point: tuple[int, int]) -> None:
     x, y = point
     async with touch_session(rsd) as service:
@@ -136,6 +144,15 @@ async def open_passcode_keypad(rsd: Any) -> bool:
             if captions_show_passcode_keypad(await accessibility_captions(rsd)):
                 return True
             continue
+
+        if attempt == 2 and captions_report_locked(captions) and not captions_show_passcode_prompt(captions):
+            # Home presses are ignored while the lock screen is already awake on
+            # this iPad. Turn the display off and wake it again; the press below
+            # then opens the Touch ID / "使用密码" dialog.
+            await press_lock(rsd)
+            await asyncio.sleep(1.5)
+            await press_home(rsd)
+            await asyncio.sleep(1.5)
 
         # On a Home-button iPad the Touch ID dialog needs a second press when
         # the display was off, but a single press when the lock screen is
@@ -450,12 +467,15 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
         # Do not press Home here: --wake already did, and an extra press can
         # dismiss the Touch ID dialog it just opened.
         if not await open_passcode_keypad(rsd):
-            # No keypad after several wake attempts: the device is already
-            # unlocked, or its lock screen uses a layout we do not recognise.
-            # Report success so the caller can retry the app launch; a genuinely
-            # locked device will make that launch fail with a clear error.
+            captions = await accessibility_captions(rsd)
+            if captions_report_locked(captions):
+                raise LaunchError(
+                    "The iPad is locked but the passcode keypad could not be opened; "
+                    "check the lock-screen layout and NONAME_IOS_PASSCODE."
+                )
+            # Only treat the device as unlocked when the lock screen is gone.
             print(
-                "[unlock] no passcode keypad appeared; treating the iPad as unlocked",
+                "[unlock] no lock screen detected; the iPad is already unlocked",
                 file=sys.stderr,
                 flush=True,
             )
