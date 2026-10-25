@@ -128,58 +128,25 @@ async def tap(rsd: Any, point: tuple[int, int]) -> None:
 
 
 async def open_passcode_keypad(rsd: Any) -> bool:
-    """Bring the numeric passcode keypad to the front on a locked iPad.
+    """Return True when the numeric passcode keypad is visible.
 
-    A Home-button iPad shows the Touch ID alert first ("使用密码" / "取消"); the
-    keypad only appears after tapping "使用密码". Face ID iPads show the keypad
-    right after a wake, so the loop also accepts that state directly.
+    This deliberately sends no blind gestures. On an iPad Air (Touch ID in the
+    power button, no Home button) the lock screen carries UI shortcuts, and a
+    swipe can open the Camera or another app instead of the keypad. The only
+    action taken here is tapping the "使用密码" button when the Touch ID alert is
+    already on screen; otherwise the caller reports a clear error and a human
+    has to unlock the device.
     """
-    for attempt in range(5):
+    for _ in range(3):
         captions = await accessibility_captions(rsd)
         if captions_show_passcode_keypad(captions):
             return True
-        if captions_show_passcode_prompt(captions):
-            await tap(rsd, USE_PASSCODE_TAP)
-            await asyncio.sleep(1.5)
-            if captions_show_passcode_keypad(await accessibility_captions(rsd)):
-                return True
-            continue
-
-        if attempt == 2 and captions_report_locked(captions) and not captions_show_passcode_prompt(captions):
-            # Home presses are ignored while the lock screen is already awake on
-            # this iPad. Turn the display off and wake it again; the press below
-            # then opens the Touch ID / "使用密码" dialog.
-            await press_lock(rsd)
-            await asyncio.sleep(1.5)
-            await press_home(rsd)
-            await asyncio.sleep(1.5)
-
-        # On a Home-button iPad the Touch ID dialog needs a second press when
-        # the display was off, but a single press when the lock screen is
-        # already visible. Press once, then wait long enough for the dialog
-        # animation and read again before deciding to press a second time;
-        # pressing twice in a row would open and immediately dismiss it.
-        await press_home(rsd)
-        await asyncio.sleep(2.0)
-        captions = await accessibility_captions(rsd)
-        # Never print the accessibility captions: they contain the device name
-        # and other personal data. Booleans are enough to diagnose the state.
-        print(
-            f"[unlock] home press {attempt + 1}/5: "
-            f"locked={captions_report_locked(captions)} "
-            f"prompt={captions_show_passcode_prompt(captions)} "
-            f"keypad={captions_show_passcode_keypad(captions)} "
-            f"elements={len(captions)}",
-            file=sys.stderr,
-            flush=True,
-        )
-        if captions_show_passcode_keypad(captions):
+        if not captions_show_passcode_prompt(captions):
+            return False
+        await tap(rsd, USE_PASSCODE_TAP)
+        await asyncio.sleep(1.5)
+        if captions_show_passcode_keypad(await accessibility_captions(rsd)):
             return True
-        if captions_show_passcode_prompt(captions):
-            await tap(rsd, USE_PASSCODE_TAP)
-            await asyncio.sleep(1.5)
-            if captions_show_passcode_keypad(await accessibility_captions(rsd)):
-                return True
     return False
 
 
@@ -445,13 +412,17 @@ async def wake_and_unlock(udid: str) -> dict[str, Any]:
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
     try:
         rsd = await tunnel.aopen()
-        await press_home(rsd)
-        await asyncio.sleep(1.2)
         captions = await accessibility_captions(rsd)
+        if not captions:
+            # No accessibility tree usually means the display is off. A power
+            # press wakes it; no other gesture is sent.
+            await press_lock(rsd)
+            await asyncio.sleep(2.0)
+            captions = await accessibility_captions(rsd)
         locked = captions_report_locked(captions)
         # Report the state instead of raising: the caller decides whether to
         # enter the passcode, and a LaunchError here would hide the real state.
-        return {"ok": True, "lockedBefore": locked, "unlocked": not locked}
+        return {"ok": True, "lockedBefore": locked, "unlocked": not locked and bool(captions)}
     finally:
         await tunnel.aclose()
 
