@@ -385,12 +385,26 @@ async def accessibility_action(
 
 async def accessibility_captions(rsd: Any) -> list[str]:
     captions: list[str] = []
-    async with AccessibilityAudit(rsd) as accessibility:
-        async for focused in accessibility.iter_elements():
-            item = focused.to_dict()
-            caption = str(item.get("caption") or "").strip()
-            if caption:
-                captions.append(caption)
+    try:
+        async with AccessibilityAudit(rsd) as accessibility:
+            async for focused in accessibility.iter_elements():
+                try:
+                    item = focused.to_dict()
+                except Exception:
+                    # The audit library occasionally meets an element variant it
+                    # cannot decode (KeyError: PlatformElementValue_v1). Skip it;
+                    # one malformed element must not abort the unlock sequence.
+                    continue
+                caption = str(item.get("caption") or "").strip()
+                if caption:
+                    captions.append(caption)
+    except Exception as error:
+        # Keep the message type only: the traceback can include raw device data.
+        print(
+            f"[unlock] accessibility scan stopped early: {type(error).__name__}",
+            file=sys.stderr,
+            flush=True,
+        )
     return captions
 
 
