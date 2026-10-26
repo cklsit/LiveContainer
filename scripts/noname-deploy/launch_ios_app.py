@@ -406,6 +406,26 @@ async def swipe_up(rsd: Any) -> None:
         await service.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, end_y)
 
 
+async def swipe_unlock(rsd: Any) -> None:
+    """Short swipe up from the bottom centre.
+
+    On a device without a passcode this unlocks straight to the home screen;
+    with a passcode it reveals the keypad. Starting near the bottom centre
+    (not the right corner) avoids the Camera lock-screen shortcut.
+    """
+    x = 32768
+    start_y = 60000
+    end_y = 38000
+    steps = 25
+    async with touch_session(rsd) as service:
+        for index in range(steps):
+            fraction = index / (steps - 1)
+            y = round(start_y + (end_y - start_y) * fraction)
+            await service.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y)
+            await asyncio.sleep(0.03)
+        await service.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, end_y)
+
+
 async def wake_and_unlock(udid: str) -> dict[str, Any]:
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
@@ -448,7 +468,7 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
     lock screen opens apps when swiped. Typing the passcode on a hardware
     keyboard is the only input that cannot trigger a lock-screen shortcut.
     """
-    usages = passcode_usages(passcode)
+    usages = passcode_usages(passcode) if passcode else []
     userspace_tunnel._create_no_root_tunnel_provider = create_mobdev2_tunnel_provider
 
     tunnel = userspace_tunnel.UserspaceRsdTunnel(serial=udid, autopair=False)
@@ -466,6 +486,26 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
                 flush=True,
             )
             return {"ok": True, "unlocked": True, "alreadyUnlocked": True}
+
+        # A device without a passcode unlocks with a short swipe; a device
+        # with one shows the keypad, which the keyboard fallback below handles.
+        await swipe_unlock(rsd)
+        await asyncio.sleep(2.0)
+        captions = await accessibility_captions(rsd)
+        print(
+            f"[unlock] after swipe: locked={captions_report_locked(captions)} "
+            f"keypad={captions_show_passcode_keypad(captions)} "
+            f"prompt={captions_show_passcode_prompt(captions)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if not captions_report_locked(captions):
+            return {"ok": True, "unlocked": True, "swiped": True}
+        if not usages:
+            raise LaunchError(
+                "The iPad is still locked and no passcode is configured; the "
+                "swipe did not unlock it."
+            )
 
         for attempt in range(3):
             captions = await accessibility_captions(rsd)

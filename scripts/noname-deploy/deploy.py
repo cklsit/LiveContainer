@@ -958,13 +958,9 @@ def ensure_device_unlocked(device_id: str) -> bool:
         print(f"[recover] the iPad is awake (unlocked={format_flag(unlocked)})", flush=True)
         return locked_before
 
-    if not passcode:
-        raise DeploymentError(
-            "The iPad is locked and NONAME_IOS_PASSCODE is not configured. "
-            "Enter the passcode on the device or disable idle auto-lock."
-        )
-
-    print("[recover] the iPad is locked; unlocking with the configured passcode", flush=True)
+    # The unlock helper first tries a swipe (works when the device has no
+    # passcode) and only types the passcode when one is configured.
+    print("[recover] the iPad is locked; trying to unlock it", flush=True)
     unlock = run(
         [
             sys.executable,
