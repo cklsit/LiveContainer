@@ -467,30 +467,47 @@ async def unlock_with_passcode(udid: str, passcode: str) -> dict[str, Any]:
             )
             return {"ok": True, "unlocked": True, "alreadyUnlocked": True}
 
-        print(f"[unlock] typing the {len(passcode)}-digit passcode on the keyboard", file=sys.stderr, flush=True)
-        await send_passcode_keys(rsd, usages)
-        await asyncio.sleep(2.5)
-        captions = await accessibility_captions(rsd)
-        print(
-            f"[unlock] after keyboard entry: locked={captions_report_locked(captions)} "
-            f"keypad={captions_show_passcode_keypad(captions)}",
-            file=sys.stderr,
-            flush=True,
-        )
-        if not captions_report_locked(captions) and not captions_show_passcode_keypad(captions):
-            return {"ok": True, "unlocked": True, "keyboard": True}
-
-        # The first key press may have opened the Touch ID alert. Tapping its
-        # "使用密码" button reveals the keypad; retry the keyboard once there.
-        if captions_show_passcode_prompt(captions):
-            await tap(rsd, USE_PASSCODE_TAP)
-            await asyncio.sleep(1.5)
-            if captions_show_passcode_keypad(await accessibility_captions(rsd)):
-                await send_passcode_keys(rsd, usages)
-                await asyncio.sleep(2.5)
+        for attempt in range(3):
+            captions = await accessibility_captions(rsd)
+            if not captions_report_locked(captions):
+                return {"ok": True, "unlocked": True, "alreadyUnlocked": True}
+            if attempt:
+                # A buttonless iPad only accepts keyboard input while the lock
+                # screen is awake. Toggle the display, then type again.
+                await press_lock(rsd)
+                await asyncio.sleep(1.5)
                 captions = await accessibility_captions(rsd)
-                if not captions_report_locked(captions) and not captions_show_passcode_keypad(captions):
-                    return {"ok": True, "unlocked": True, "keyboard": True}
+                if not captions_report_locked(captions):
+                    return {"ok": True, "unlocked": True, "alreadyUnlocked": True}
+
+            print(
+                f"[unlock] typing the {len(passcode)}-digit passcode on the keyboard "
+                f"(attempt {attempt + 1}/3)",
+                file=sys.stderr,
+                flush=True,
+            )
+            await send_passcode_keys(rsd, usages)
+            await asyncio.sleep(2.5)
+            captions = await accessibility_captions(rsd)
+            print(
+                f"[unlock] after keyboard entry {attempt + 1}/3: "
+                f"locked={captions_report_locked(captions)} "
+                f"keypad={captions_show_passcode_keypad(captions)} "
+                f"prompt={captions_show_passcode_prompt(captions)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if not captions_report_locked(captions):
+                return {"ok": True, "unlocked": True, "keyboard": True}
+            if captions_show_passcode_prompt(captions):
+                await tap(rsd, USE_PASSCODE_TAP)
+                await asyncio.sleep(1.5)
+                if captions_show_passcode_keypad(await accessibility_captions(rsd)):
+                    await send_passcode_keys(rsd, usages)
+                    await asyncio.sleep(2.5)
+                    captions = await accessibility_captions(rsd)
+                    if not captions_report_locked(captions):
+                        return {"ok": True, "unlocked": True, "keyboard": True}
 
         raise LaunchError(
             "Hardware keyboard passcode entry did not unlock the iPad. Verify "
